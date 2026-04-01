@@ -331,7 +331,7 @@ void renderDisplay() {
   EPD_ShowString(10, 255, updStr, 12, BLACK);
 
   // ── Vertical divider ────────────────────────────────────────────────
-  EPD_DrawLine(192, 0, 192, 272, BLACK);
+  EPD_DrawLine(192, 0, 192, 271, BLACK);
 
   // ── Right panel: event list ─────────────────────────────────────────
   const int evX  = 200;   // left edge of event area

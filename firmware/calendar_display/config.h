@@ -6,8 +6,8 @@
 
 // ── Time ──────────────────────────────────────────────────────────────
 #define NTP_SERVER            "pool.ntp.org"
-#define TIMEZONE_OFFSET_HOURS (-8)  // UTC offset in hours (e.g. -8 for US Pacific)
-#define DAYLIGHT_SAVING_HOURS (1)   // 1 if DST is currently active, 0 otherwise
+#define TIMEZONE_OFFSET_HOURS (-3)  // UTC offset in hours (-3 for Uruguay)
+#define DAYLIGHT_SAVING_HOURS (0)   // Uruguay does not observe DST
 
 // ── Calendar ──────────────────────────────────────────────────────────
 #define CALENDAR_ID         "primary"   // "primary" or a specific calendar ID
