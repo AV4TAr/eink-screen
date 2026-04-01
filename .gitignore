@@ -1,0 +1,16 @@
+# Google OAuth secrets — never commit these
+firmware/calendar_display/secrets.h
+
+# Vendor repos
+repos/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Arduino build output
+build/
