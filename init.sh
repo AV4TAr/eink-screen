@@ -32,8 +32,20 @@ else
   echo "[3/4] secrets.h already exists, skipping."
 fi
 
-# ── 4. Arduino IDE reminder ───────────────────────────────────────────
-echo "[4/4] Arduino IDE setup required:"
+# ── 4. CH340 driver check ─────────────────────────────────────────────
+echo "[4/5] Checking CH340 driver (required for CrowPanel USB)..."
+if ls /dev/cu.wchusbserial* &>/dev/null || ls /dev/cu.usbserial* &>/dev/null; then
+  echo "  CH340 driver appears to be installed."
+elif system_profiler SPExtensionsDataType 2>/dev/null | grep -qi "ch34"; then
+  echo "  CH340 driver is installed."
+else
+  echo "  WARNING: CH340 driver may not be installed."
+  echo "  Download from: https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html"
+  echo "  Install, allow in Privacy & Security, then restart Mac."
+fi
+
+# ── 5. Arduino IDE reminder ───────────────────────────────────────────
+echo "[5/5] Arduino IDE setup required:"
 echo "  - Install board:   esp32 by Espressif Systems 3.x (Boards Manager)"
 echo "  - Install library: ArduinoJson 7.x (Library Manager)"
 echo "  - See arduino_ide_setup.md for full board settings."

@@ -205,6 +205,7 @@ bool fetchEvents(const String& token) {
   url += "&maxResults=" + String(MAX_EVENTS);
   url += "&timeMin=" + urlEncodeTime(tMin);
   url += "&timeMax=" + urlEncodeTime(tMax);
+  url += "&fields=items(summary,start,end)";  // only fetch what we need
 
   WiFiClientSecure client;
   client.setInsecure();
@@ -220,12 +221,28 @@ bool fetchEvents(const String& token) {
     return false;
   }
 
+  // Use HTTP/1.0 to avoid chunked transfer, then stream-parse JSON
   String resp = http.getString();
   http.end();
 
+  if (resp.length() == 0) {
+    Serial.println("Empty calendar response");
+    return false;
+  }
+  Serial.printf("Calendar response: %d bytes\n", resp.length());
+
+  JsonDocument filter;
+  filter["items"][0]["summary"] = true;
+  filter["items"][0]["start"]["dateTime"] = true;
+  filter["items"][0]["start"]["date"] = true;
+  filter["items"][0]["end"]["dateTime"] = true;
+
   JsonDocument doc;
-  if (deserializeJson(doc, resp) != DeserializationError::Ok) {
-    Serial.println("JSON parse error");
+  DeserializationError err = deserializeJson(doc, resp, DeserializationOption::Filter(filter));
+  resp = "";  // free memory immediately after parsing
+
+  if (err != DeserializationError::Ok) {
+    Serial.printf("JSON parse error: %s\n", err.c_str());
     return false;
   }
 

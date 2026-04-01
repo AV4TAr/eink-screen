@@ -18,7 +18,17 @@ Shows current time and today's meetings — from 20 minutes ago through end of d
 
 ## Quick Start
 
-### 1. Arduino IDE setup
+### 1. Install CH340 driver (macOS only, required)
+
+The board uses a CH340 USB-UART chip. macOS needs a driver:
+
+1. Download: [CH341SER_MAC from WCH](https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html)
+2. Install `CH34xVCPDriver.pkg`
+3. **System Settings → Privacy & Security → Allow** the extension
+4. **Restart Mac**
+5. Board will appear as `/dev/cu.wchusbserial...`
+
+### 2. Arduino IDE setup
 
 - Install board: **esp32 by Espressif** 3.x via Board Manager
 - Install library: **ArduinoJson** 7.x via Library Manager

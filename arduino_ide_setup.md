@@ -3,13 +3,23 @@
 ## Board
 **Tools → Board → esp32 → ESP32S3 Dev Module**
 
+## Required Driver
+
+The CrowPanel ESP32-S3 uses a **CH340 chip** for USB-UART. macOS requires a driver.
+
+- Download: https://www.wch-ic.com/downloads/CH341SER_MAC_ZIP.html
+- Install `CH34xVCPDriver.pkg`
+- **System Settings → Privacy & Security → Allow** the kernel extension
+- **Restart Mac**
+- After reboot the board appears as `/dev/cu.wchusbserial...`
+
 ## Required Settings (Tools menu)
 
 | Setting | Value |
 |---------|-------|
 | Board | ESP32S3 Dev Module |
-| Port | /dev/cu.usbmodemSN234567892 |
-| USB CDC On Boot | **Enabled** |
+| Port | /dev/cu.wchusbserial1410 |
+| USB CDC On Boot | **Disabled** |
 | CPU Frequency | 240MHz (WiFi) |
 | Core Debug Level | None |
 | USB DFU On Boot | Disabled |
@@ -40,8 +50,7 @@
 
 ## Flashing Tips
 
-- Connect via USB hub (direct USB-C to Mac doesn't work for this board)
-- If upload fails with "No serial data received":
-  1. Click Upload
-  2. When `Connecting......` appears, press and hold BOOT, tap RESET, release BOOT
-- **USB CDC On Boot must be Enabled** for the port to be recognized properly
+- The CH340 driver handles auto-reset — no manual BOOT+RESET needed
+- Connect via USB hub or directly (both work with CH340)
+- Port appears as `/dev/cu.wchusbserial1410` after driver install
+- If port doesn't appear, check driver is installed and Mac was rebooted
