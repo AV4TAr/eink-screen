@@ -38,7 +38,6 @@ struct CalEvent {
   char attendees[128];  // comma-separated names
   int  startHour, startMin;
   int  endHour,   endMin;
-  bool allDay;
 };
 
 CalEvent events[MAX_EVENTS];
@@ -388,18 +387,13 @@ bool fetchEvents(const String& token) {
     const char* startDate = item["start"]["date"]     | "";
     const char* endDT     = item["end"]["dateTime"]   | "";
 
-    if (strlen(startDT) > 0) {
-      ev.allDay = false;
-      parseHourMin(startDT, &ev.startHour, &ev.startMin);
-      parseHourMin(endDT,   &ev.endHour,   &ev.endMin);
-    } else {
-      ev.allDay = true;
-      ev.startHour = 0; ev.startMin = 0;
-      ev.endHour   = 23; ev.endMin  = 59;
-    }
+    if (strlen(startDT) == 0) continue;  // skip all-day events
 
-    Serial.printf("Event: %s  %02d:%02d-%02d:%02d  allDay=%d\n",
-      ev.title, ev.startHour, ev.startMin, ev.endHour, ev.endMin, ev.allDay);
+    parseHourMin(startDT, &ev.startHour, &ev.startMin);
+    parseHourMin(endDT,   &ev.endHour,   &ev.endMin);
+
+    Serial.printf("Event: %s  %02d:%02d-%02d:%02d\n",
+      ev.title, ev.startHour, ev.startMin, ev.endHour, ev.endMin);
     eventCount++;
   }
 
@@ -416,7 +410,6 @@ bool currentlyInMeeting() {
   struct tm* t = localtime(&now);
   int nowMins = t->tm_hour * 60 + t->tm_min;
   for (int i = 0; i < eventCount; i++) {
-    if (events[i].allDay) continue;
     int startMins = events[i].startHour * 60 + events[i].startMin;
     int endMins   = events[i].endHour   * 60 + events[i].endMin;
     if (nowMins >= startMins && nowMins < endMins) return true;
@@ -507,7 +500,6 @@ void checkAlerts() {
 
   for (int i = 0; i < eventCount; i++) {
     CalEvent& ev = events[i];
-    if (ev.allDay) continue;
     int startMins = ev.startHour * 60 + ev.startMin;
 
     // 5-minute warning
@@ -614,7 +606,6 @@ void renderMeeting() {
   // Find the active meeting
   CalEvent* ev = nullptr;
   for (int i = 0; i < eventCount; i++) {
-    if (events[i].allDay) continue;
     int s = events[i].startHour * 60 + events[i].startMin;
     int e = events[i].endHour   * 60 + events[i].endMin;
     if (nowMins >= s && nowMins < e) { ev = &events[i]; break; }
@@ -628,7 +619,7 @@ void renderMeeting() {
   int remainMins   = endMins - nowMins;
 
   // ── Header ──────────────────────────────────────────────────────────
-  EPD_ShowString(20, 14, "MEETING IN PROGRESS", 24, WHITE);
+  EPD_ShowString(20, 14, "MEETING IN PROGRESS", 16, WHITE);
 
   // ── Title (auto-size to fit) ─────────────────────────────────────────
   int titleLen  = strlen(ev->title);
@@ -645,7 +636,7 @@ void renderMeeting() {
   char timeLine[48];
   snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d   %d min left",
            ev->startHour, ev->startMin, ev->endHour, ev->endMin, remainMins);
-  EPD_ShowString(20, timeY, timeLine, 24, WHITE);
+  EPD_ShowString(20, timeY, timeLine, 16, WHITE);
 
   // ── Block progress bar ───────────────────────────────────────────────
   int numBlocks    = max(1, (durationMins + 9) / 10);  // ceil(duration/10)
@@ -660,8 +651,20 @@ void renderMeeting() {
 
   for (int b = 0; b < numBlocks; b++) {
     int bx = barX + b * (blockW + gap);
-    int filled = (b < elapsedBlocks) ? 1 : 0;
-    EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, filled);
+    if (b < elapsedBlocks) {
+      // Fully elapsed — solid fill
+      EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 1);
+    } else if (b == elapsedBlocks) {
+      // Current block — partial fill based on minutes into this chunk
+      int partialW = (elapsedMins % 10) * blockW / 10;
+      if (partialW > 0) {
+        EPD_DrawRectangle(bx, barY, bx + partialW, barY + barH, WHITE, 1);
+      }
+      EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 0);
+    } else {
+      // Not yet — outline only
+      EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 0);
+    }
   }
 }
 
@@ -722,13 +725,7 @@ void renderOverview() {
     CalEvent& first = events[0];
     int cardSepY = 72;  // default separator y (normal mode)
 
-    if (first.allDay) {
-      // All-day event: simple single line
-      char line[80];
-      snprintf(line, sizeof(line), "All day  %.55s", first.title);
-      EPD_ShowString(evX, 6, line, 16, FG_COLOR);
-      cardSepY = 30;
-    } else {
+    {
       int startMins    = first.startHour * 60 + first.startMin;
       int endMins      = first.endHour   * 60 + first.endMin;
       bool isNow       = (nowMins >= startMins && nowMins < endMins);
@@ -780,38 +777,41 @@ void renderOverview() {
       EPD_DrawLine(evX - 2, cardSepY, evX + evW, cardSepY, FG_COLOR);
     }
 
-    // ── Section 2: remaining events ─────────────────────────────────────
-    int evY = cardSepY + 8;
-    for (int i = 1; i < eventCount && evY + 24 <= 255; i++) {
-      CalEvent& ev = events[i];
-      bool isNow = false;
+    // ── Section 2: events 1, 2, 3 with cascading font sizes ─────────────
+    // event[1] and event[2] → 16px each
+    const int sec2Sizes[]   = {16, 16};
+    const int sec2RowH[]    = {22, 22};
+    const int sec2MaxCh[]   = {59, 59};
+
+    int evY   = cardSepY + 8;
+    int shown = 0;
+    for (int i = 1; i < eventCount && shown < 2; i++) {
+      CalEvent& ev  = events[i];
+      int fontSize  = sec2Sizes[shown];
+      int rowH      = sec2RowH[shown];
+      int titleMax  = sec2MaxCh[shown];
+      bool isNow    = false;
       char line[80];
 
-      if (ev.allDay) {
-        snprintf(line, sizeof(line), "All day  %.35s", ev.title);
-      } else {
-        int startMins = ev.startHour * 60 + ev.startMin;
-        int endMins   = ev.endHour   * 60 + ev.endMin;
-        isNow = (nowMins >= startMins && nowMins < endMins);
-        char titlePart[36];
-        strncpy(titlePart, ev.title, 35);
-        titlePart[35] = '\0';
-        snprintf(line, sizeof(line), "%02d:%02d-%02d:%02d %s",
-                 ev.startHour, ev.startMin, ev.endHour, ev.endMin, titlePart);
-      }
+      int startMins = ev.startHour * 60 + ev.startMin;
+      int endMins   = ev.endHour   * 60 + ev.endMin;
+      isNow = (nowMins >= startMins && nowMins < endMins);
+      char titlePart[60];
+      strncpy(titlePart, ev.title, titleMax);
+      titlePart[titleMax] = '\0';
+      snprintf(line, sizeof(line), "%02d:%02d-%02d:%02d %s",
+               ev.startHour, ev.startMin, ev.endHour, ev.endMin, titlePart);
 
       if (isNow) {
-        EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + 25, FG_COLOR, 1);
-        EPD_ShowString(evX, evY, line, 24, BG_COLOR);
+        EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + fontSize + 1, FG_COLOR, 1);
+        EPD_ShowString(evX, evY, line, fontSize, BG_COLOR);
       } else {
-        EPD_ShowString(evX, evY, line, 24, FG_COLOR);
+        EPD_ShowString(evX, evY, line, fontSize, FG_COLOR);
       }
-      evY += 30;
+      evY += rowH;
+      shown++;
     }
 
-    if (eventCount > 1) {
-      EPD_ShowString(680, 255, "[v]more", 16, FG_COLOR);
-    }
   }
 }
 
@@ -848,12 +848,9 @@ void renderDetail() {
     int baseY = slot * 132 + 4;  // slot 0: y=4, slot 1: y=136
 
     // ── Label: NOW / NEXT / upcoming + index ──────────────────────────
-    bool isNow = false;
-    if (!ev.allDay) {
-      int startMins = ev.startHour * 60 + ev.startMin;
-      int endMins   = ev.endHour   * 60 + ev.endMin;
-      isNow = (nowMins >= startMins && nowMins < endMins);
-    }
+    int startMins = ev.startHour * 60 + ev.startMin;
+    int endMins   = ev.endHour   * 60 + ev.endMin;
+    bool isNow    = (nowMins >= startMins && nowMins < endMins);
 
     const char* label;
     if (isNow) label = "NOW";
@@ -875,12 +872,8 @@ void renderDetail() {
 
     // ── Time range (size 24) ──────────────────────────────────────────
     char timeLine[24];
-    if (ev.allDay) {
-      snprintf(timeLine, sizeof(timeLine), "All day");
-    } else {
-      snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
-               ev.startHour, ev.startMin, ev.endHour, ev.endMin);
-    }
+    snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
+             ev.startHour, ev.startMin, ev.endHour, ev.endMin);
     EPD_ShowString(15, baseY + 48, timeLine, 24, FG_COLOR);
 
     // ── Attendees (size 16) ───────────────────────────────────────────
