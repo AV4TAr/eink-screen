@@ -597,6 +597,50 @@ void pushToDisplay() {
 //
 // Each block = 10 min. Filled = elapsed, empty = remaining.
 // ─────────────────────────────────────────────────────────────────────
+
+// Helper: strip newlines from src and render up to maxLines lines at fontSize.
+// Returns the y position after the last line rendered (or y if nothing rendered).
+int showFlatText(const char* src, int x, int y, int fontSize, int lineChars, int maxLines, uint8_t color) {
+  if (!src || src[0] == '\0') return y;
+  char flat[256];
+  int fi = 0;
+  for (int si = 0; src[si] && fi < 254; si++) {
+    char c = src[si];
+    if (c == '\n' || c == '\r' || c == '\t') {
+      if (fi > 0 && flat[fi-1] != ' ') flat[fi++] = ' ';
+    } else {
+      flat[fi++] = c;
+    }
+  }
+  flat[fi] = '\0';
+  if (fi == 0) return y;
+
+  int lineH = fontSize + 4;
+  char line[128];
+  int linesDrawn = 0;
+  for (int l = 0; l < maxLines; l++) {
+    int offset = l * lineChars;
+    if (offset >= fi) break;
+    int len = fi - offset;
+    bool truncated = (len > lineChars);
+    if (len > lineChars) len = lineChars;
+    // On the last allowed line, add "..." if more text remains
+    bool isLastLine = (l == maxLines - 1);
+    if (isLastLine && (truncated || offset + len < fi)) {
+      if (len > 3) len -= 3;
+      strncpy(line, flat + offset, len);
+      line[len] = '\0';
+      strcat(line, "...");
+    } else {
+      strncpy(line, flat + offset, len);
+      line[len] = '\0';
+    }
+    EPD_ShowString(x, y + l * lineH, line, fontSize, color);
+    linesDrawn++;
+  }
+  return y + linesDrawn * lineH;
+}
+
 void renderMeeting() {
   time_t now;
   time(&now);
@@ -637,6 +681,15 @@ void renderMeeting() {
   snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d   %d min left",
            ev->startHour, ev->startMin, ev->endHour, ev->endMin, remainMins);
   EPD_ShowString(20, timeY, timeLine, 16, WHITE);
+
+  // ── Attendees + description ──────────────────────────────────────────
+  int extraY = timeY + 20;
+  if (strlen(ev->attendees) > 0) {
+    extraY = showFlatText(ev->attendees, 20, extraY, 16, 90, 1, WHITE) + 4;
+  }
+  if (strlen(ev->description) > 0 && extraY < 162) {
+    showFlatText(ev->description, 20, extraY, 16, 90, 1, WHITE);
+  }
 
   // ── Block progress bar ───────────────────────────────────────────────
   int numBlocks    = max(1, (durationMins + 9) / 10);  // ceil(duration/10)
@@ -769,7 +822,15 @@ void renderOverview() {
                first.startHour, first.startMin, first.endHour, first.endMin);
       EPD_ShowString(evX, timeY, timeLine, 24, FG_COLOR);
 
-      cardSepY = 114;
+      // Attendees + description
+      int extraY = 112;
+      if (strlen(first.attendees) > 0) {
+        extraY = showFlatText(first.attendees, evX, extraY, 16, 65, 1, FG_COLOR) + 4;
+      }
+      if (strlen(first.description) > 0) {
+        extraY = showFlatText(first.description, evX, extraY, 16, 65, 2, FG_COLOR) + 4;
+      }
+      cardSepY = extraY + 2;
     }
 
     // ── Separator ───────────────────────────────────────────────────────
