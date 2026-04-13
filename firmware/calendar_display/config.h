@@ -12,7 +12,7 @@
 // ── Calendar ──────────────────────────────────────────────────────────
 #define CALENDAR_ID         "primary"   // "primary" or a specific calendar ID
 #define MAX_EVENTS          11          // max events to fetch and display
-#define PAST_WINDOW_MINUTES 20          // show events that started up to N min ago
+#define PAST_WINDOW_MINUTES 0           // show events that started up to N min ago
 #define LOOKAHEAD_HOURS     4           // show events up to N hours ahead
 
 // ── Buttons ──────────────────────────────────────────────────────────

@@ -85,7 +85,7 @@ String urlEncodeTime(time_t t);
 void handleButtons();
 bool currentlyInMeeting();
 void blinkAlert(int times, CalEvent& ev, int minutesUntil);
-void showAlertScreen(CalEvent& ev, int minutesUntil);
+void showAlertScreen(CalEvent& ev, int minutesUntil, uint8_t bg);
 void checkAlerts();
 void checkMeetingMode();
 
@@ -426,63 +426,64 @@ bool currentlyInMeeting() {
 
 
 // ─────────────────────────────────────────────────────────────────────
-// Show a full-screen alert with meeting details (black bg, white text)
+// Show centered alert screen with meeting info.
+// bg determines background; fg is derived automatically for contrast.
 // ─────────────────────────────────────────────────────────────────────
-void showAlertScreen(CalEvent& ev, int minutesUntil) {
-  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, BLACK);
-  Paint_Clear(BLACK);
+void showAlertScreen(CalEvent& ev, int minutesUntil, uint8_t bg) {
+  uint8_t fg = (bg == BLACK) ? WHITE : BLACK;
 
-  char header[32];
+  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, bg);
+  Paint_Clear(bg);
+
+  // Build strings
+  char header[40];
   snprintf(header, sizeof(header), "!! Meeting in %d min !!", minutesUntil);
-  EPD_ShowString(20, 16, header, 24, WHITE);
 
-  char titleLine[33];
-  strncpy(titleLine, ev.title, 32);
-  titleLine[32] = '\0';
-  EPD_ShowString(20, 56, titleLine, 24, WHITE);
+  int titleSize = (strlen(ev.title) <= 20) ? 48 : 24;
+  int titleMax  = (titleSize == 48) ? 23 : 47;
+  char titleLine[48];
+  strncpy(titleLine, ev.title, titleMax);
+  titleLine[titleMax] = '\0';
 
-  char timeLine[24];
+  char timeLine[20];
   snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
            ev.startHour, ev.startMin, ev.endHour, ev.endMin);
-  EPD_ShowString(20, 90, timeLine, 16, WHITE);
 
-  int nextY = 114;
-  if (strlen(ev.attendees) > 0) {
-    char attLine[90];
-    snprintf(attLine, sizeof(attLine), "With: %.80s", ev.attendees);
-    EPD_ShowString(20, nextY, attLine, 12, WHITE);
-    nextY += 18;
-  }
+  // Vertical centering
+  const int headerSize = 24;
+  const int timeSize   = 24;
+  const int gap        = 12;
+  int totalH = headerSize + gap + titleSize + gap + timeSize;
+  int y = (EPD_H - totalH) / 2;
 
-  if (strlen(ev.description) > 0 && nextY + 12 <= 260) {
-    char descLine[91];
-    strncpy(descLine, ev.description, 90);
-    descLine[90] = '\0';
-    for (int c = 0; c < 90 && descLine[c]; c++) {
-      if (descLine[c] == '\n' || descLine[c] == '\r') descLine[c] = ' ';
-    }
-    EPD_ShowString(20, nextY, descLine, 12, WHITE);
-  }
+  // Horizontal centering helper: x = (width - chars * charWidth) / 2
+  // charWidth = fontSize / 2
+  auto centerX = [](const char* s, int sz) -> int {
+    int w = (int)strlen(s) * sz / 2;
+    int x = (792 - w) / 2;
+    return x < 10 ? 10 : x;
+  };
+
+  EPD_ShowString(centerX(header,    headerSize), y,                                    header,    headerSize, fg);
+  EPD_ShowString(centerX(titleLine, titleSize),  y + headerSize + gap,                 titleLine, titleSize,  fg);
+  EPD_ShowString(centerX(timeLine,  timeSize),   y + headerSize + gap + titleSize + gap, timeLine, timeSize,  fg);
 
   pushToDisplay();
 }
 
 
 // ─────────────────────────────────────────────────────────────────────
-// Blink N times then show alert screen with meeting info
+// Blink N times (each frame shows meeting info with proper contrast)
+// then hold the black-bg alert screen for ALERT_SCREEN_MS
 // ─────────────────────────────────────────────────────────────────────
 void blinkAlert(int times, CalEvent& ev, int minutesUntil) {
   for (int i = 0; i < times; i++) {
-    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, BLACK);
-    Paint_Clear(BLACK);
-    pushToDisplay();
+    showAlertScreen(ev, minutesUntil, BLACK);
     delay(600);
-    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
-    Paint_Clear(WHITE);
-    pushToDisplay();
+    showAlertScreen(ev, minutesUntil, WHITE);
     delay(400);
   }
-  showAlertScreen(ev, minutesUntil);
+  showAlertScreen(ev, minutesUntil, BLACK);
   delay(ALERT_SCREEN_MS);
 }
 
@@ -627,31 +628,32 @@ void renderMeeting() {
   int remainMins   = endMins - nowMins;
 
   // ── Header ──────────────────────────────────────────────────────────
-  EPD_ShowString(20, 20, "MEETING IN PROGRESS", 16, WHITE);
+  EPD_ShowString(20, 14, "MEETING IN PROGRESS", 24, WHITE);
 
   // ── Title (auto-size to fit) ─────────────────────────────────────────
   int titleLen  = strlen(ev->title);
-  int titleSize = (titleLen <= 16) ? 48 : (titleLen <= 33) ? 24 : 16;
-  int titleY    = 50;
-  char titleLine[34];
-  strncpy(titleLine, ev->title, 33);
-  titleLine[33] = '\0';
+  int titleSize = (titleLen <= 20) ? 48 : 24;
+  int titleY    = 46;
+  int titleMax  = (titleSize == 48) ? 23 : 47;
+  char titleLine[48];
+  strncpy(titleLine, ev->title, titleMax);
+  titleLine[titleMax] = '\0';
   EPD_ShowString(20, titleY, titleLine, titleSize, WHITE);
 
   // ── Time + remaining ────────────────────────────────────────────────
-  int timeY = titleY + titleSize + 14;
+  int timeY = titleY + titleSize + 10;
   char timeLine[48];
   snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d   %d min left",
            ev->startHour, ev->startMin, ev->endHour, ev->endMin, remainMins);
-  EPD_ShowString(20, timeY, timeLine, 16, WHITE);
+  EPD_ShowString(20, timeY, timeLine, 24, WHITE);
 
   // ── Block progress bar ───────────────────────────────────────────────
   int numBlocks    = max(1, (durationMins + 9) / 10);  // ceil(duration/10)
   int elapsedBlocks = elapsedMins / 10;
 
   const int barX = 20;
-  const int barY = 200;
-  const int barH = 38;
+  const int barY = 182;
+  const int barH = 46;
   const int totalW = 752;
   const int gap    = 8;
   int blockW = (totalW - gap * (numBlocks - 1)) / numBlocks;
@@ -699,7 +701,7 @@ void renderOverview() {
   char dateStr[20];
   snprintf(dateStr, sizeof(dateStr), "%s %d %s",
            days[t->tm_wday], t->tm_mday, months[t->tm_mon]);
-  EPD_ShowString(10, 94, dateStr, 16, FG_COLOR);
+  EPD_ShowString(10, 94, dateStr, 24, FG_COLOR);
 
   char updStr[16];
   snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
@@ -708,55 +710,108 @@ void renderOverview() {
   // ── Divider ─────────────────────────────────────────────────────────
   EPD_DrawLine(192, 0, 192, 271, FG_COLOR);
 
-  // ── Right panel: event list ─────────────────────────────────────────
-  const int evX  = 200;
-  const int evW  = 575;
-  int evY = 6;
+  // ── Right panel ─────────────────────────────────────────────────────
+  const int evX = 200;
+  const int evW = 575;
   int nowMins = t->tm_hour * 60 + t->tm_min;
-
-  for (int i = 0; i < eventCount && evY + 16 <= 255; i++) {
-    CalEvent& ev = events[i];
-    bool isNow = false;
-    char line[80];
-
-    // First event gets a larger font to stand out
-    int fontSize = (i == 0) ? 24 : 16;
-    int rowH     = (i == 0) ? 30 : 22;
-
-    if (ev.allDay) {
-      snprintf(line, sizeof(line), "All day  %.60s", ev.title);
-    } else {
-      int startMins = ev.startHour * 60 + ev.startMin;
-      int endMins   = ev.endHour   * 60 + ev.endMin;
-      isNow = (nowMins >= startMins && nowMins < endMins);
-
-      char timeLabel[14];
-      snprintf(timeLabel, sizeof(timeLabel), "%02d:%02d-%02d:%02d",
-               ev.startHour, ev.startMin, ev.endHour, ev.endMin);
-
-      // Shorter title truncation for the larger font (fewer chars fit)
-      int titleMax = (i == 0) ? 35 : 60;
-      char titlePart[61];
-      strncpy(titlePart, ev.title, titleMax);
-      titlePart[titleMax] = '\0';
-      snprintf(line, sizeof(line), "%s %s", timeLabel, titlePart);
-    }
-
-    if (isNow) {
-      EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + fontSize + 1, FG_COLOR, 1);
-      EPD_ShowString(evX, evY, line, fontSize, BG_COLOR);
-    } else {
-      EPD_ShowString(evX, evY, line, fontSize, FG_COLOR);
-    }
-    evY += rowH;
-  }
 
   if (eventCount == 0) {
     EPD_ShowString(evX, 120, "No events ahead", 16, FG_COLOR);
-  }
+  } else {
+    // ── Section 1: prominent next/current meeting card ─────────────────
+    CalEvent& first = events[0];
+    int cardSepY = 72;  // default separator y (normal mode)
 
-  if (eventCount > 0) {
-    EPD_ShowString(680, 255, "[v]more", 12, FG_COLOR);
+    if (first.allDay) {
+      // All-day event: simple single line
+      char line[80];
+      snprintf(line, sizeof(line), "All day  %.55s", first.title);
+      EPD_ShowString(evX, 6, line, 16, FG_COLOR);
+      cardSepY = 30;
+    } else {
+      int startMins    = first.startHour * 60 + first.startMin;
+      int endMins      = first.endHour   * 60 + first.endMin;
+      bool isNow       = (nowMins >= startMins && nowMins < endMins);
+      int minutesUntil = startMins - nowMins;
+      bool soonAlert   = (!isNow && minutesUntil >= 0 && minutesUntil <= ALERT_WARN_MINUTES);
+
+      // Label row
+      char labelStr[40];
+      if (isNow) {
+        snprintf(labelStr, sizeof(labelStr), "NOW");
+      } else if (soonAlert) {
+        snprintf(labelStr, sizeof(labelStr), "!! %d MIN !!", minutesUntil);
+      } else if (minutesUntil > 60) {
+        snprintf(labelStr, sizeof(labelStr), "NEXT  %02d:%02d",
+                 first.startHour, first.startMin);
+      } else if (minutesUntil > 0) {
+        snprintf(labelStr, sizeof(labelStr), "NEXT UP  -  in %d min", minutesUntil);
+      } else {
+        snprintf(labelStr, sizeof(labelStr), "STARTING NOW");
+      }
+      EPD_ShowString(evX, 6, labelStr, 16, FG_COLOR);
+
+      // Title — always 48px for section 1
+      int titleY   = 26;
+      int titleMax = 23;  // 48px font = 24px/char, 575px wide → 23 chars
+      char titleLine[24];
+      strncpy(titleLine, first.title, titleMax);
+      titleLine[titleMax] = '\0';
+
+      if (isNow) {
+        EPD_DrawRectangle(evX - 2, titleY - 2, evX + evW, titleY + 50, FG_COLOR, 1);
+        EPD_ShowString(evX, titleY, titleLine, 48, BG_COLOR);
+      } else {
+        EPD_ShowString(evX, titleY, titleLine, 48, FG_COLOR);
+      }
+
+      // Time range
+      int timeY = 82;
+      char timeLine[20];
+      snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
+               first.startHour, first.startMin, first.endHour, first.endMin);
+      EPD_ShowString(evX, timeY, timeLine, 24, FG_COLOR);
+
+      cardSepY = 114;
+    }
+
+    // ── Separator ───────────────────────────────────────────────────────
+    if (eventCount > 1) {
+      EPD_DrawLine(evX - 2, cardSepY, evX + evW, cardSepY, FG_COLOR);
+    }
+
+    // ── Section 2: remaining events ─────────────────────────────────────
+    int evY = cardSepY + 8;
+    for (int i = 1; i < eventCount && evY + 24 <= 255; i++) {
+      CalEvent& ev = events[i];
+      bool isNow = false;
+      char line[80];
+
+      if (ev.allDay) {
+        snprintf(line, sizeof(line), "All day  %.35s", ev.title);
+      } else {
+        int startMins = ev.startHour * 60 + ev.startMin;
+        int endMins   = ev.endHour   * 60 + ev.endMin;
+        isNow = (nowMins >= startMins && nowMins < endMins);
+        char titlePart[36];
+        strncpy(titlePart, ev.title, 35);
+        titlePart[35] = '\0';
+        snprintf(line, sizeof(line), "%02d:%02d-%02d:%02d %s",
+                 ev.startHour, ev.startMin, ev.endHour, ev.endMin, titlePart);
+      }
+
+      if (isNow) {
+        EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + 25, FG_COLOR, 1);
+        EPD_ShowString(evX, evY, line, 24, BG_COLOR);
+      } else {
+        EPD_ShowString(evX, evY, line, 24, FG_COLOR);
+      }
+      evY += 30;
+    }
+
+    if (eventCount > 1) {
+      EPD_ShowString(680, 255, "[v]more", 16, FG_COLOR);
+    }
   }
 }
 
@@ -818,7 +873,7 @@ void renderDetail() {
     titleLine[32] = '\0';
     EPD_ShowString(15, baseY + 20, titleLine, 24, FG_COLOR);
 
-    // ── Time range (size 16) ──────────────────────────────────────────
+    // ── Time range (size 24) ──────────────────────────────────────────
     char timeLine[24];
     if (ev.allDay) {
       snprintf(timeLine, sizeof(timeLine), "All day");
@@ -826,33 +881,32 @@ void renderDetail() {
       snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
                ev.startHour, ev.startMin, ev.endHour, ev.endMin);
     }
-    EPD_ShowString(15, baseY + 48, timeLine, 16, FG_COLOR);
+    EPD_ShowString(15, baseY + 48, timeLine, 24, FG_COLOR);
 
-    // ── Attendees (size 12, truncated to fit) ─────────────────────────
+    // ── Attendees (size 16) ───────────────────────────────────────────
     if (strlen(ev.attendees) > 0) {
       char attLine[90];
       snprintf(attLine, sizeof(attLine), "With: %.80s", ev.attendees);
-      EPD_ShowString(15, baseY + 68, attLine, 12, FG_COLOR);
+      EPD_ShowString(15, baseY + 78, attLine, 16, FG_COLOR);
     }
 
-    // ── Description snippet (size 12, first ~90 chars) ────────────────
+    // ── Description snippet (size 16) ────────────────────────────────
     if (strlen(ev.description) > 0) {
       char descLine[91];
       strncpy(descLine, ev.description, 90);
       descLine[90] = '\0';
-      // Replace newlines with spaces for single-line display
       for (int c = 0; c < 90 && descLine[c]; c++) {
         if (descLine[c] == '\n' || descLine[c] == '\r') descLine[c] = ' ';
       }
-      int descY = baseY + (strlen(ev.attendees) > 0 ? 82 : 68);
-      if (descY + 12 <= 268) {
-        EPD_ShowString(15, descY, descLine, 12, FG_COLOR);
+      int descY = baseY + (strlen(ev.attendees) > 0 ? 98 : 78);
+      if (descY + 16 <= 268) {
+        EPD_ShowString(15, descY, descLine, 16, FG_COLOR);
       }
     }
 
     // ── Separator between the two cards ───────────────────────────────
     if (slot == 0 && scrollIndex + 1 < eventCount) {
-      int sepY = baseY + 126;
+      int sepY = baseY + 128;
       if (sepY < 271) {
         EPD_DrawLine(15, sepY, 775, sepY, FG_COLOR);
       }
@@ -860,9 +914,9 @@ void renderDetail() {
   }
 
   // ── Navigation hints at bottom ──────────────────────────────────────
-  EPD_ShowString(15, 255, "[^]overview", 12, FG_COLOR);
+  EPD_ShowString(15, 255, "[^]overview", 16, FG_COLOR);
   if (scrollIndex + 1 < eventCount) {
-    EPD_ShowString(680, 255, "[v]next", 12, FG_COLOR);
+    EPD_ShowString(680, 255, "[v]next", 16, FG_COLOR);
   }
 }
 
