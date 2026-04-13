@@ -26,5 +26,12 @@
 // ── Display ───────────────────────────────────────────────────────────
 #define DISPLAY_ROTATION 0  // 0 = USB at bottom, 180 = USB at top
 
+// ── Alerts ────────────────────────────────────────────────────────────
+#define ALERT_WARN_MINUTES   5   // first blink warning N minutes before meeting
+#define ALERT_URGENT_MINUTES 1   // urgent blink warning N minutes before meeting
+#define ALERT_WARN_BLINKS    3   // number of blinks for the 5-min warning
+#define ALERT_URGENT_BLINKS  5   // number of blinks for the 1-min warning
+#define ALERT_SCREEN_MS   8000   // how long to show the alert info screen (ms)
+
 // ── Refresh ───────────────────────────────────────────────────────────
-#define REFRESH_INTERVAL_MS (5UL * 60UL * 1000UL)  // 5 minutes
+#define REFRESH_INTERVAL_MS (1UL * 60UL * 1000UL)  // 1 minute

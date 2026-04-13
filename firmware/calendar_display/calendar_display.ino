@@ -1,5 +1,5 @@
 /*
- * E-ink Google Calendar Display v1.5
+ * E-ink Google Calendar Display v1.6
  * CrowPanel ESP32 5.79" (272×792 BW)
  *
  * Shows current time + Google Calendar events (now → now+4h).
@@ -11,6 +11,11 @@
  *   Rotary Down (IO4) — enter detail view / scroll to next meeting
  *   Rotary Up   (IO6) — return to overview
  *   HOME        (IO2) — force refresh from Google Calendar
+ *
+ * Meeting alerts:
+ *   5 min before — 3 slow blinks
+ *   1 min before — 5 slow blinks
+ *   During meeting — black background, white text
  */
 
 #include <Arduino.h>
@@ -51,6 +56,19 @@ unsigned long lastRefreshMs  = 0;
 unsigned long lastButtonMs   = 0;
 bool          timeReady      = false;
 
+// ── Meeting mode + alerts ─────────────────────────────────────────────
+bool inMeetingMode            = false;
+int  alerted5minFor[MAX_EVENTS];  // startMins of events already given 5-min alert
+int  alerted1minFor[MAX_EVENTS];  // startMins of events already given 1-min alert
+int  alerted5minCount         = 0;
+int  alerted1minCount         = 0;
+int  lastAlertDay             = -1;
+int  lastMeetingCheckMins     = -1;
+
+// FG/BG helpers — flip with meeting mode
+#define FG_COLOR (inMeetingMode ? WHITE : BLACK)
+#define BG_COLOR (inMeetingMode ? BLACK : WHITE)
+
 // ── Forward declarations ──────────────────────────────────────────────
 void connectWiFi();
 String getAccessToken();
@@ -64,6 +82,11 @@ void showMessage(const char* line1, const char* line2 = nullptr);
 void parseHourMin(const char* dt, int* h, int* m);
 String urlEncodeTime(time_t t);
 void handleButtons();
+bool currentlyInMeeting();
+void blinkAlert(int times, CalEvent& ev, int minutesUntil);
+void showAlertScreen(CalEvent& ev, int minutesUntil);
+void checkAlerts();
+void checkMeetingMode();
 
 
 // ─────────────────────────────────────────────────────────────────────
@@ -116,22 +139,26 @@ void setup() {
     delay(3000);
   }
 
+  inMeetingMode = currentlyInMeeting();
   renderDisplay();
   lastRefreshMs = millis();
 }
 
 
 // ─────────────────────────────────────────────────────────────────────
-// loop — button polling + periodic refresh
+// loop — button polling + alerts + periodic refresh
 // ─────────────────────────────────────────────────────────────────────
 void loop() {
   handleButtons();
+  checkAlerts();
+  checkMeetingMode();
 
   if (millis() - lastRefreshMs >= REFRESH_INTERVAL_MS) {
     if (WiFi.status() != WL_CONNECTED) connectWiFi();
     if (WiFi.status() == WL_CONNECTED) refreshData();
     viewMode = VIEW_OVERVIEW;
     scrollIndex = 0;
+    inMeetingMode = currentlyInMeeting();
     renderDisplay();
     lastRefreshMs = millis();
   }
@@ -179,6 +206,7 @@ void handleButtons() {
     if (WiFi.status() == WL_CONNECTED) refreshData();
     viewMode = VIEW_OVERVIEW;
     scrollIndex = 0;
+    inMeetingMode = currentlyInMeeting();
     changed = true;
   }
 
@@ -323,6 +351,7 @@ bool fetchEvents(const String& token) {
   }
 
   eventCount = 0;
+
   JsonArray items = doc["items"].as<JsonArray>();
   for (JsonObject item : items) {
     if (eventCount >= MAX_EVENTS) break;
@@ -378,11 +407,166 @@ bool fetchEvents(const String& token) {
 
 
 // ─────────────────────────────────────────────────────────────────────
+// Returns true if any non-all-day event is happening right now
+// ─────────────────────────────────────────────────────────────────────
+bool currentlyInMeeting() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+  int nowMins = t->tm_hour * 60 + t->tm_min;
+  for (int i = 0; i < eventCount; i++) {
+    if (events[i].allDay) continue;
+    int startMins = events[i].startHour * 60 + events[i].startMin;
+    int endMins   = events[i].endHour   * 60 + events[i].endMin;
+    if (nowMins >= startMins && nowMins < endMins) return true;
+  }
+  return false;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Show a full-screen alert with meeting details (black bg, white text)
+// ─────────────────────────────────────────────────────────────────────
+void showAlertScreen(CalEvent& ev, int minutesUntil) {
+  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, BLACK);
+  Paint_Clear(BLACK);
+
+  char header[32];
+  snprintf(header, sizeof(header), "!! Meeting in %d min !!", minutesUntil);
+  EPD_ShowString(20, 16, header, 24, WHITE);
+
+  char titleLine[33];
+  strncpy(titleLine, ev.title, 32);
+  titleLine[32] = '\0';
+  EPD_ShowString(20, 56, titleLine, 24, WHITE);
+
+  char timeLine[24];
+  snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
+           ev.startHour, ev.startMin, ev.endHour, ev.endMin);
+  EPD_ShowString(20, 90, timeLine, 16, WHITE);
+
+  int nextY = 114;
+  if (strlen(ev.attendees) > 0) {
+    char attLine[90];
+    snprintf(attLine, sizeof(attLine), "With: %.80s", ev.attendees);
+    EPD_ShowString(20, nextY, attLine, 12, WHITE);
+    nextY += 18;
+  }
+
+  if (strlen(ev.description) > 0 && nextY + 12 <= 260) {
+    char descLine[91];
+    strncpy(descLine, ev.description, 90);
+    descLine[90] = '\0';
+    for (int c = 0; c < 90 && descLine[c]; c++) {
+      if (descLine[c] == '\n' || descLine[c] == '\r') descLine[c] = ' ';
+    }
+    EPD_ShowString(20, nextY, descLine, 12, WHITE);
+  }
+
+  pushToDisplay();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Blink N times then show alert screen with meeting info
+// ─────────────────────────────────────────────────────────────────────
+void blinkAlert(int times, CalEvent& ev, int minutesUntil) {
+  for (int i = 0; i < times; i++) {
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, BLACK);
+    Paint_Clear(BLACK);
+    pushToDisplay();
+    delay(600);
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+    Paint_Clear(WHITE);
+    pushToDisplay();
+    delay(400);
+  }
+  showAlertScreen(ev, minutesUntil);
+  delay(ALERT_SCREEN_MS);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Check if any event is approaching and fire blink alerts
+// Tracks by event start time so re-fetches don't re-trigger
+// ─────────────────────────────────────────────────────────────────────
+void checkAlerts() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+  int nowMins = t->tm_hour * 60 + t->tm_min;
+
+  // Reset alert history once per day (early morning)
+  if (t->tm_mday != lastAlertDay && t->tm_hour == 0) {
+    alerted5minCount = 0;
+    alerted1minCount = 0;
+    lastAlertDay = t->tm_mday;
+  }
+
+  for (int i = 0; i < eventCount; i++) {
+    CalEvent& ev = events[i];
+    if (ev.allDay) continue;
+    int startMins = ev.startHour * 60 + ev.startMin;
+
+    // 5-minute warning
+    if (nowMins == startMins - ALERT_WARN_MINUTES) {
+      bool already = false;
+      for (int j = 0; j < alerted5minCount; j++) {
+        if (alerted5minFor[j] == startMins) { already = true; break; }
+      }
+      if (!already) {
+        if (alerted5minCount < MAX_EVENTS) alerted5minFor[alerted5minCount++] = startMins;
+        Serial.printf("Alert: 5-min warning for %s\n", ev.title);
+        blinkAlert(ALERT_WARN_BLINKS, ev, ALERT_WARN_MINUTES);
+        renderDisplay();
+      }
+    }
+
+    // 1-minute warning
+    if (nowMins == startMins - ALERT_URGENT_MINUTES) {
+      bool already = false;
+      for (int j = 0; j < alerted1minCount; j++) {
+        if (alerted1minFor[j] == startMins) { already = true; break; }
+      }
+      if (!already) {
+        if (alerted1minCount < MAX_EVENTS) alerted1minFor[alerted1minCount++] = startMins;
+        Serial.printf("Alert: 1-min warning for %s\n", ev.title);
+        blinkAlert(ALERT_URGENT_BLINKS, ev, ALERT_URGENT_MINUTES);
+        renderDisplay();
+      }
+    }
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Check once per minute if meeting mode changed; re-render if so
+// ─────────────────────────────────────────────────────────────────────
+void checkMeetingMode() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+  int nowMins = t->tm_hour * 60 + t->tm_min;
+
+  if (nowMins == lastMeetingCheckMins) return;
+  lastMeetingCheckMins = nowMins;
+
+  bool newMode = currentlyInMeeting();
+  if (newMode != inMeetingMode) {
+    inMeetingMode = newMode;
+    Serial.printf("Meeting mode: %s\n", inMeetingMode ? "ON" : "OFF");
+    renderDisplay();
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
 // Render dispatcher
 // ─────────────────────────────────────────────────────────────────────
 void renderDisplay() {
-  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
-  Paint_Clear(WHITE);
+  uint8_t bg = inMeetingMode ? BLACK : WHITE;
+  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, bg);
+  Paint_Clear(bg);
 
   if (viewMode == VIEW_DETAIL && eventCount > 0)
     renderDetail();
@@ -426,9 +610,9 @@ void renderOverview() {
   if (hr12 == 0) hr12 = 12;
   char timeStr[8];
   snprintf(timeStr, sizeof(timeStr), "%d:%02d", hr12, t->tm_min);
-  EPD_ShowString(10, 6, timeStr, 48, BLACK);
+  EPD_ShowString(10, 6, timeStr, 48, FG_COLOR);
 
-  EPD_ShowString(10, 62, t->tm_hour < 12 ? "AM" : "PM", 24, BLACK);
+  EPD_ShowString(10, 62, t->tm_hour < 12 ? "AM" : "PM", 24, FG_COLOR);
 
   const char* days[]   = {"Sun","Mon","Tue","Wed","Thu","Fri","Sat"};
   const char* months[] = {"Jan","Feb","Mar","Apr","May","Jun",
@@ -436,19 +620,18 @@ void renderOverview() {
   char dateStr[20];
   snprintf(dateStr, sizeof(dateStr), "%s %d %s",
            days[t->tm_wday], t->tm_mday, months[t->tm_mon]);
-  EPD_ShowString(10, 94, dateStr, 16, BLACK);
+  EPD_ShowString(10, 94, dateStr, 16, FG_COLOR);
 
   char updStr[16];
   snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
-  EPD_ShowString(10, 255, updStr, 12, BLACK);
+  EPD_ShowString(10, 255, updStr, 12, FG_COLOR);
 
   // ── Divider ─────────────────────────────────────────────────────────
-  EPD_DrawLine(192, 0, 192, 271, BLACK);
+  EPD_DrawLine(192, 0, 192, 271, FG_COLOR);
 
   // ── Right panel: event list ─────────────────────────────────────────
   const int evX  = 200;
   const int evW  = 575;
-  const int rowH = 22;
   int evY = 6;
   int nowMins = t->tm_hour * 60 + t->tm_min;
 
@@ -456,6 +639,10 @@ void renderOverview() {
     CalEvent& ev = events[i];
     bool isNow = false;
     char line[80];
+
+    // First event gets a larger font to stand out
+    int fontSize = (i == 0) ? 24 : 16;
+    int rowH     = (i == 0) ? 30 : 22;
 
     if (ev.allDay) {
       snprintf(line, sizeof(line), "All day  %.60s", ev.title);
@@ -468,28 +655,29 @@ void renderOverview() {
       snprintf(timeLabel, sizeof(timeLabel), "%02d:%02d-%02d:%02d",
                ev.startHour, ev.startMin, ev.endHour, ev.endMin);
 
+      // Shorter title truncation for the larger font (fewer chars fit)
+      int titleMax = (i == 0) ? 35 : 60;
       char titlePart[61];
-      strncpy(titlePart, ev.title, 60);
-      titlePart[60] = '\0';
+      strncpy(titlePart, ev.title, titleMax);
+      titlePart[titleMax] = '\0';
       snprintf(line, sizeof(line), "%s %s", timeLabel, titlePart);
     }
 
     if (isNow) {
-      EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + 17, BLACK, 1);
-      EPD_ShowString(evX, evY, line, 16, WHITE);
+      EPD_DrawRectangle(evX - 2, evY - 2, evX + evW, evY + fontSize + 1, FG_COLOR, 1);
+      EPD_ShowString(evX, evY, line, fontSize, BG_COLOR);
     } else {
-      EPD_ShowString(evX, evY, line, 16, BLACK);
+      EPD_ShowString(evX, evY, line, fontSize, FG_COLOR);
     }
     evY += rowH;
   }
 
-
   if (eventCount == 0) {
-    EPD_ShowString(evX, 120, "No events ahead", 16, BLACK);
+    EPD_ShowString(evX, 120, "No events ahead", 16, FG_COLOR);
   }
 
   if (eventCount > 0) {
-    EPD_ShowString(680, 255, "[v]more", 12, BLACK);
+    EPD_ShowString(680, 255, "[v]more", 12, FG_COLOR);
   }
 }
 
@@ -538,18 +726,18 @@ void renderDetail() {
     else if (slot == 0 && scrollIndex == 0) label = "NEXT";
     else label = "UPCOMING";
 
-    EPD_ShowString(15, baseY, label, 16, BLACK);
+    EPD_ShowString(15, baseY, label, 16, FG_COLOR);
     char idxStr[12];
     snprintf(idxStr, sizeof(idxStr), "%d of %d", idx + 1, eventCount);
     int idxX = 780 - (int)strlen(idxStr) * 6;
     if (idxX < 600) idxX = 600;
-    EPD_ShowString(idxX, baseY, idxStr, 12, BLACK);
+    EPD_ShowString(idxX, baseY, idxStr, 12, FG_COLOR);
 
     // ── Title (size 24, up to 32 chars) ───────────────────────────────
     char titleLine[33];
     strncpy(titleLine, ev.title, 32);
     titleLine[32] = '\0';
-    EPD_ShowString(15, baseY + 20, titleLine, 24, BLACK);
+    EPD_ShowString(15, baseY + 20, titleLine, 24, FG_COLOR);
 
     // ── Time range (size 16) ──────────────────────────────────────────
     char timeLine[24];
@@ -559,13 +747,13 @@ void renderDetail() {
       snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d",
                ev.startHour, ev.startMin, ev.endHour, ev.endMin);
     }
-    EPD_ShowString(15, baseY + 48, timeLine, 16, BLACK);
+    EPD_ShowString(15, baseY + 48, timeLine, 16, FG_COLOR);
 
     // ── Attendees (size 12, truncated to fit) ─────────────────────────
     if (strlen(ev.attendees) > 0) {
       char attLine[90];
       snprintf(attLine, sizeof(attLine), "With: %.80s", ev.attendees);
-      EPD_ShowString(15, baseY + 68, attLine, 12, BLACK);
+      EPD_ShowString(15, baseY + 68, attLine, 12, FG_COLOR);
     }
 
     // ── Description snippet (size 12, first ~90 chars) ────────────────
@@ -579,7 +767,7 @@ void renderDetail() {
       }
       int descY = baseY + (strlen(ev.attendees) > 0 ? 82 : 68);
       if (descY + 12 <= 268) {
-        EPD_ShowString(15, descY, descLine, 12, BLACK);
+        EPD_ShowString(15, descY, descLine, 12, FG_COLOR);
       }
     }
 
@@ -587,15 +775,15 @@ void renderDetail() {
     if (slot == 0 && scrollIndex + 1 < eventCount) {
       int sepY = baseY + 126;
       if (sepY < 271) {
-        EPD_DrawLine(15, sepY, 775, sepY, BLACK);
+        EPD_DrawLine(15, sepY, 775, sepY, FG_COLOR);
       }
     }
   }
 
   // ── Navigation hints at bottom ──────────────────────────────────────
-  EPD_ShowString(15, 255, "[^]overview", 12, BLACK);
+  EPD_ShowString(15, 255, "[^]overview", 12, FG_COLOR);
   if (scrollIndex + 1 < eventCount) {
-    EPD_ShowString(680, 255, "[v]next", 12, BLACK);
+    EPD_ShowString(680, 255, "[v]next", 12, FG_COLOR);
   }
 }
 
