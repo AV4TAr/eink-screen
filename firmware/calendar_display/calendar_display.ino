@@ -43,6 +43,7 @@ struct CalEvent {
 CalEvent events[MAX_EVENTS];
 int      eventCount   = 0;
 char     lastUpdated[8] = "--:--";
+char     oooNames[128] = "";   // comma-separated OOO people, populated each fetch
 
 // ── View state ────────────────────────────────────────────────────────
 #define VIEW_OVERVIEW 0
@@ -336,6 +337,8 @@ bool fetchEvents(const String& token) {
   JsonDocument filter;
   filter["items"][0]["summary"] = true;
   filter["items"][0]["description"] = true;
+  filter["items"][0]["eventType"] = true;
+  filter["items"][0]["organizer"]["displayName"] = true;
   filter["items"][0]["start"]["dateTime"] = true;
   filter["items"][0]["start"]["date"] = true;
   filter["items"][0]["end"]["dateTime"] = true;
@@ -351,6 +354,7 @@ bool fetchEvents(const String& token) {
   }
 
   eventCount = 0;
+  oooNames[0] = '\0';
 
   JsonArray items = doc["items"].as<JsonArray>();
   for (JsonObject item : items) {
@@ -387,7 +391,34 @@ bool fetchEvents(const String& token) {
     const char* startDate = item["start"]["date"]     | "";
     const char* endDT     = item["end"]["dateTime"]   | "";
 
-    if (strlen(startDT) == 0) continue;  // skip all-day events
+    if (strlen(startDT) == 0) {
+      // Detect OOO/PTO all-day events by eventType or title keywords
+      const char* evType  = item["eventType"] | "";
+      const char* summary = item["summary"]   | "";
+
+      // Case-insensitive title check for "OOO" or "PTO"
+      char titleUp[64];
+      strncpy(titleUp, summary, 63);
+      titleUp[63] = '\0';
+      for (int ci = 0; titleUp[ci]; ci++) titleUp[ci] = toupper(titleUp[ci]);
+      bool titleMatch = (strstr(titleUp, "OOO") || strstr(titleUp, "PTO"));
+
+      if (strcmp(evType, "outOfOffice") == 0 || titleMatch) {
+        const char* name = item["organizer"]["displayName"] | "";
+        if (strlen(name) > 0) {
+          int curLen = strlen(oooNames);
+          if (curLen > 0 && curLen + 1 < 127) {
+            strcat(oooNames, "\n");
+            curLen++;
+          }
+          int nameLen = strlen(name);
+          if (curLen + nameLen < 127) {
+            strncat(oooNames, name, 127 - curLen);
+          }
+        }
+      }
+      continue;
+    }
 
     parseHourMin(startDT, &ev.startHour, &ev.startMin);
     parseHourMin(endDT,   &ev.endHour,   &ev.endMin);
@@ -758,6 +789,26 @@ void renderOverview() {
   snprintf(dateStr, sizeof(dateStr), "%s %d %s",
            days[t->tm_wday], t->tm_mday, months[t->tm_mon]);
   EPD_ShowString(10, 94, dateStr, 24, FG_COLOR);
+
+  // ── OOO block (only when someone is out) ────────────────────────────
+  if (strlen(oooNames) > 0) {
+    EPD_ShowString(10, 130, "OOO:", 12, FG_COLOR);
+    char oooCopy[128];
+    strncpy(oooCopy, oooNames, 127);
+    oooCopy[127] = '\0';
+    int oooY = 146;
+    char* tok = strtok(oooCopy, "\n");
+    int shown = 0;
+    while (tok && shown < 3 && oooY < 240) {
+      char nameLine[28];
+      strncpy(nameLine, tok, 26);
+      nameLine[26] = '\0';
+      EPD_ShowString(10, oooY, nameLine, 12, FG_COLOR);
+      oooY += 16;
+      shown++;
+      tok = strtok(nullptr, "\n");
+    }
+  }
 
   char updStr[16];
   snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
