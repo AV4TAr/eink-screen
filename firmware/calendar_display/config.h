@@ -23,5 +23,8 @@
 #define BTN_OK    5   // (reserved)
 #define BUTTON_DEBOUNCE_MS 250
 
+// ── Display ───────────────────────────────────────────────────────────
+#define DISPLAY_ROTATION 0  // 0 = USB at bottom, 180 = USB at top
+
 // ── Refresh ───────────────────────────────────────────────────────────
 #define REFRESH_INTERVAL_MS (5UL * 60UL * 1000UL)  // 5 minutes

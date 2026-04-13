@@ -24,7 +24,8 @@ Rotaion:90-90度方向
 Rotaion:180-180度方向
 Rotaion:270-270度方向
 *******************/
-#define Rotation 180  
+#include "config.h"
+#define Rotation DISPLAY_ROTATION
 
 
 void Paint_NewImage(uint8_t *image,uint16_t Width,uint16_t Height,uint16_t Rotate,uint16_t Color); 					 //创建画布控制显示方向
