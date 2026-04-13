@@ -75,6 +75,7 @@ String getAccessToken();
 bool fetchEvents(const String& token);
 void refreshData();
 void renderDisplay();
+void renderMeeting();
 void renderOverview();
 void renderDetail();
 void pushToDisplay();
@@ -570,6 +571,8 @@ void renderDisplay() {
 
   if (viewMode == VIEW_DETAIL && eventCount > 0)
     renderDetail();
+  else if (inMeetingMode)
+    renderMeeting();
   else
     renderOverview();
 
@@ -582,6 +585,82 @@ void pushToDisplay() {
   EPD_Display(ImageBW);
   EPD_FastUpdate();
   EPD_DeepSleep();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Meeting in progress: title + time info + block progress bar
+//
+//  x=0                                                           x=792
+//   ┌────────────────────────────────────────────────────────────────┐ y=0
+//   │  MEETING IN PROGRESS                                           │ y=20
+//   │                                                                │
+//   │  Team Standup                                                  │ y=50 (48px)
+//   │                                                                │
+//   │  10:30 - 11:00  •  12 min left                                │ y=112
+//   │                                                                │
+//   │  [■■■][■■■][■■■][□□□][□□□][□□□]                              │ y=190
+//   └────────────────────────────────────────────────────────────────┘ y=271
+//
+// Each block = 10 min. Filled = elapsed, empty = remaining.
+// ─────────────────────────────────────────────────────────────────────
+void renderMeeting() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+  int nowMins = t->tm_hour * 60 + t->tm_min;
+
+  // Find the active meeting
+  CalEvent* ev = nullptr;
+  for (int i = 0; i < eventCount; i++) {
+    if (events[i].allDay) continue;
+    int s = events[i].startHour * 60 + events[i].startMin;
+    int e = events[i].endHour   * 60 + events[i].endMin;
+    if (nowMins >= s && nowMins < e) { ev = &events[i]; break; }
+  }
+  if (!ev) { renderOverview(); return; }  // fallback
+
+  int startMins    = ev->startHour * 60 + ev->startMin;
+  int endMins      = ev->endHour   * 60 + ev->endMin;
+  int durationMins = endMins - startMins;
+  int elapsedMins  = nowMins - startMins;
+  int remainMins   = endMins - nowMins;
+
+  // ── Header ──────────────────────────────────────────────────────────
+  EPD_ShowString(20, 20, "MEETING IN PROGRESS", 16, WHITE);
+
+  // ── Title (auto-size to fit) ─────────────────────────────────────────
+  int titleLen  = strlen(ev->title);
+  int titleSize = (titleLen <= 16) ? 48 : (titleLen <= 33) ? 24 : 16;
+  int titleY    = 50;
+  char titleLine[34];
+  strncpy(titleLine, ev->title, 33);
+  titleLine[33] = '\0';
+  EPD_ShowString(20, titleY, titleLine, titleSize, WHITE);
+
+  // ── Time + remaining ────────────────────────────────────────────────
+  int timeY = titleY + titleSize + 14;
+  char timeLine[48];
+  snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d   %d min left",
+           ev->startHour, ev->startMin, ev->endHour, ev->endMin, remainMins);
+  EPD_ShowString(20, timeY, timeLine, 16, WHITE);
+
+  // ── Block progress bar ───────────────────────────────────────────────
+  int numBlocks    = max(1, (durationMins + 9) / 10);  // ceil(duration/10)
+  int elapsedBlocks = elapsedMins / 10;
+
+  const int barX = 20;
+  const int barY = 200;
+  const int barH = 38;
+  const int totalW = 752;
+  const int gap    = 8;
+  int blockW = (totalW - gap * (numBlocks - 1)) / numBlocks;
+
+  for (int b = 0; b < numBlocks; b++) {
+    int bx = barX + b * (blockW + gap);
+    int filled = (b < elapsedBlocks) ? 1 : 0;
+    EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, filled);
+  }
 }
 
 
