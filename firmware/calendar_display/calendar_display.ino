@@ -59,6 +59,9 @@ unsigned long lastRefreshMs  = 0;
 unsigned long lastButtonMs   = 0;
 bool          timeReady      = false;
 
+// ── Network state ─────────────────────────────────────────────────────
+bool wifiOk = false;
+
 // ── Meeting mode + alerts ─────────────────────────────────────────────
 bool inMeetingMode            = false;
 int  alerted5minFor[MAX_EVENTS];  // startMins of events already given 5-min alert
@@ -227,8 +230,9 @@ void connectWiFi() {
   for (int i = 0; i < 40 && WiFi.status() != WL_CONNECTED; i++) {
     delay(500);
   }
+  wifiOk = (WiFi.status() == WL_CONNECTED);
   Serial.print("WiFi: ");
-  Serial.println(WiFi.status() == WL_CONNECTED ? "connected" : "FAILED");
+  Serial.println(wifiOk ? "connected" : "FAILED");
 }
 
 
@@ -893,6 +897,11 @@ void renderMeeting() {
       EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 0);
     }
   }
+
+  // ── NO WIFI indicator ───────────────────────────────────────────────
+  if (!wifiOk) {
+    EPD_ShowString(10, 255, "NO WIFI", 12, WHITE);
+  }
 }
 
 
@@ -953,9 +962,13 @@ void renderOverview() {
     }
   }
 
-  char updStr[16];
-  snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
-  EPD_ShowString(10, 255, updStr, 12, FG_COLOR);
+  if (wifiOk) {
+    char updStr[16];
+    snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
+    EPD_ShowString(10, 255, updStr, 12, FG_COLOR);
+  } else {
+    EPD_ShowString(10, 255, "NO WIFI", 12, FG_COLOR);
+  }
 
   // ── Divider ─────────────────────────────────────────────────────────
   EPD_DrawLine(192, 0, 192, 271, FG_COLOR);
