@@ -10,7 +10,7 @@ Shows current time, upcoming meetings, attendees, descriptions — and who on yo
 
 | Part | Detail |
 |------|--------|
-| Board | CrowPanel ESP32-S3 (8MB Flash, 8MB PSRAM) |
+| Board | [CrowPanel ESP32-S3 5.79" E-Paper HMI](https://www.elecrow.com/crowpanel-esp32-5-79-e-paper-hmi-display-with-272-792-resolution-black-white-color-driven-by-spi-interface.html) |
 | Display | 5.79" e-ink, 272×792 BW, SSD1683×2 |
 | Interface | SPI |
 
