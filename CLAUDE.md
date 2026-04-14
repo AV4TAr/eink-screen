@@ -23,7 +23,7 @@ arduino-cli upload -b esp32:esp32:esp32s3 \
   firmware/calendar_display/calendar_display.ino
 ```
 
-Port `/dev/cu.wchusbserial2110` may vary. Required library: **ArduinoJson 7.x**. Board package: **esp32 by Espressif 3.x**. Monitor serial at 115200 baud.
+Port may vary — check with `ls /dev/cu.wch*`. Required libraries: **ArduinoJson 7.x**, **PubSubClient 2.8**. Board package: **esp32 by Espressif 3.x**. Monitor serial at 115200 baud.
 
 ## First-time secrets setup
 
@@ -46,6 +46,7 @@ All tuneable constants live in `config.h`:
 - Button GPIO pins: `BTN_HOME` (force refresh), `BTN_UP` (back to overview), `BTN_DOWN` (scroll detail)
 - Alert thresholds: `ALERT_WARN_MINUTES` (5), `ALERT_URGENT_MINUTES` (1)
 - `DISPLAY_ROTATION` (0 = USB at bottom)
+- MQTT: `MQTT_BROKER` (broker IP), `MQTT_PORT` (1883), `MQTT_TOPIC` (`eink/push`), `MQTT_CLIENT_ID`, `NOTIF_TIMEOUT_MS` (30s auto-dismiss)
 
 ## Architecture
 
@@ -67,6 +68,10 @@ All firmware logic is in a single sketch `calendar_display.ino`. The display dri
 - `checkAlerts()` — blink screen at T-5min and T-1min before meetings
 - `checkMeetingMode()` — switches between white/black background when entering/leaving a meeting
 - `showFlatText()` — helper: strips newlines, renders multi-line truncated text with "..."
+- `connectMQTT()` — connects to Mosquitto broker and subscribes to `eink/push` topic (non-blocking)
+- `onMqttMessage()` — MQTT callback: parses JSON payload, sets `notifPending = true`
+- `renderNotification()` — shows push notification: `[SOURCE]` label, title (24px), body (16px, up to 3 lines), dismiss hint
+- `renderDone()` — static "YOU'RE DONE FOR TODAY" screen shown when no events remain after noon
 
 **Display coordinate system:** Physical display is 272×792, mounted landscape. `Rotation=0` (USB at bottom) → logical canvas 792×272px. Left panel (clock): x=0–192. Right panel (events): x=200–792.
 
@@ -109,9 +114,19 @@ y=255: upd HH:MM              (12px)
 - At T-1min: blink screen 5× — same but with "!! 1 MIN !!" label
 - `ALERT_SCREEN_MS` (8000ms): how long the alert info screen stays visible
 
-**Two views:**
-- **Overview** — clock left, next meeting card + 2 upcoming events right
+**Overview right panel bottom:**
+- Density bar at y=258: 11 hourly blocks (8am–6pm), filled=busy, outlined=free. Uses existing `events[]` array.
+
+**Three views + notification mode:**
+- **Overview** — clock left, next meeting card + 2 upcoming events right + density bar
 - **Detail** — 2 events at a time, large text, attendees, description; BTN_DOWN enters/scrolls, BTN_UP exits
+- **Done** — static screen when `eventCount == 0` and past noon; re-renders if new events appear
+- **Notification** (`inNotifMode`) — full-screen push notification; any button or 30s timeout dismisses
+
+**Push notification flow:**
+1. Mosquitto broker runs locally via Docker (`tools/mosquitto/docker-compose.yml`)
+2. `tools/push.py "message"` publishes JSON `{title, body, source}` to `eink/push`
+3. ESP32 receives via PubSubClient, sets `notifPending`, renders notification screen
 
 **Font sizes available:** 12, 16, 24, 48 px (bitmap fonts in `EPDfont.h`). Each character is `size` px tall and `size/2` px wide.
 
@@ -122,7 +137,7 @@ y=255: upd HH:MM              (12px)
 
 ## Roadmap
 
-- **v1.2 (current):** overview redesign, attendees/description on cards, OOO left panel
+- **v1.5 (current):** MQTT push notifications, meeting density bar, done screen, WiFi backoff
 - **v2:** partial refresh for smoother button scrolling
 - **v3:** AI agent on Mac serves meeting context over local HTTP; ESP32 polls and displays summary per event
-- **Future:** OOO improvements, more calendar sources
+- **Future:** Slack/Gmail daemon → MQTT pipeline, OOO improvements
