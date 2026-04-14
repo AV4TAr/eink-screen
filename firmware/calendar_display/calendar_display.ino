@@ -27,6 +27,7 @@
 #include <WiFiClientSecure.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include <PubSubClient.h>
 
 // ── Display buffer ────────────────────────────────────────────────────
 uint8_t ImageBW[EPD_W * EPD_H / 8];  // 800×272 / 8 = 27200 bytes
@@ -77,6 +78,16 @@ int  lastMeetingCheckMins     = -1;
 #define FG_COLOR (inMeetingMode ? WHITE : BLACK)
 #define BG_COLOR (inMeetingMode ? BLACK : WHITE)
 
+// ── MQTT + push notifications ─────────────────────────────────────────
+WiFiClient   mqttWifiClient;
+PubSubClient mqttClient(mqttWifiClient);
+bool         notifPending    = false;
+char         notifTitle[64]  = "";
+char         notifBody[160]  = "";
+char         notifSource[32] = "";
+unsigned long notifShownAt   = 0;
+bool         inNotifMode     = false;
+
 // ── Forward declarations ──────────────────────────────────────────────
 void connectWiFi();
 String getAccessToken();
@@ -87,6 +98,7 @@ void renderMeeting();
 void renderOverview();
 void renderDetail();
 void renderDone();
+void renderNotification();
 void pushToDisplay();
 void showMessage(const char* line1, const char* line2 = nullptr);
 void parseHourMin(const char* dt, int* h, int* m);
@@ -97,6 +109,8 @@ void blinkAlert(int times, CalEvent& ev, int minutesUntil);
 void showAlertScreen(CalEvent& ev, int minutesUntil, uint8_t bg);
 void checkAlerts();
 void checkMeetingMode();
+void onMqttMessage(char* topic, byte* payload, unsigned int length);
+void connectMQTT();
 
 
 // ─────────────────────────────────────────────────────────────────────
@@ -144,6 +158,7 @@ void setup() {
 
     showMessage("Fetching calendar...");
     refreshData();
+    connectMQTT();
   } else {
     showMessage("WiFi failed.", "Check config.h");
     delay(3000);
@@ -162,6 +177,29 @@ void loop() {
   handleButtons();
   checkAlerts();
   checkMeetingMode();
+
+  // ── MQTT ──────────────────────────────────────────────────────────────
+  mqttClient.loop();
+  if (!mqttClient.connected() && WiFi.status() == WL_CONNECTED) {
+    connectMQTT();
+  }
+
+  // ── Notification display ──────────────────────────────────────────────
+  if (notifPending) {
+    notifPending  = false;
+    inNotifMode   = true;
+    notifShownAt  = millis();
+    Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+    Paint_Clear(WHITE);
+    renderNotification();
+    pushToDisplay();
+  }
+
+  // Auto-dismiss notification after timeout
+  if (inNotifMode && millis() - notifShownAt > NOTIF_TIMEOUT_MS) {
+    inNotifMode = false;
+    renderDisplay();
+  }
 
   if (millis() - lastRefreshMs >= REFRESH_INTERVAL_MS) {
     if (WiFi.status() != WL_CONNECTED) {
@@ -206,6 +244,21 @@ void handleButtons() {
   if (millis() - lastButtonMs < BUTTON_DEBOUNCE_MS) return;
 
   bool changed = false;
+
+  // Any button dismisses a notification
+  if (inNotifMode) {
+    bool anyButton = (digitalRead(BTN_DOWN) == LOW ||
+                      digitalRead(BTN_UP)   == LOW ||
+                      digitalRead(BTN_HOME) == LOW ||
+                      digitalRead(BTN_OK)   == LOW ||
+                      digitalRead(BTN_EXIT) == LOW);
+    if (anyButton) {
+      lastButtonMs = millis();
+      inNotifMode  = false;
+      renderDisplay();
+    }
+    return;
+  }
 
   // DOWN — enter detail view or scroll forward
   if (digitalRead(BTN_DOWN) == LOW) {
@@ -1308,4 +1361,85 @@ void showMessage(const char* line1, const char* line2) {
   EPD_ShowString(10, 110, line1, 24, BLACK);
   if (line2) EPD_ShowString(10, 142, line2, 24, BLACK);
   pushToDisplay();
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// MQTT callback — fires when a message arrives on subscribed topic
+// ─────────────────────────────────────────────────────────────────────
+void onMqttMessage(char* topic, byte* payload, unsigned int length) {
+  // Null-terminate the payload into a local buffer
+  char buf[256];
+  unsigned int copyLen = length < sizeof(buf) - 1 ? length : sizeof(buf) - 1;
+  memcpy(buf, payload, copyLen);
+  buf[copyLen] = '\0';
+
+  Serial.printf("MQTT message on %s: %s\n", topic, buf);
+
+  JsonDocument doc;
+  if (deserializeJson(doc, buf) != DeserializationError::Ok) {
+    Serial.println("MQTT: JSON parse error");
+    return;
+  }
+
+  const char* title  = doc["title"]  | "";
+  const char* body   = doc["body"]   | "";
+  const char* source = doc["source"] | "cli";
+
+  strncpy(notifTitle,  title,  sizeof(notifTitle)  - 1);
+  notifTitle[sizeof(notifTitle)  - 1] = '\0';
+  strncpy(notifBody,   body,   sizeof(notifBody)   - 1);
+  notifBody[sizeof(notifBody)   - 1] = '\0';
+  strncpy(notifSource, source, sizeof(notifSource) - 1);
+  notifSource[sizeof(notifSource) - 1] = '\0';
+
+  notifPending = true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Connect to MQTT broker and subscribe to push topic (non-blocking)
+// ─────────────────────────────────────────────────────────────────────
+void connectMQTT() {
+  mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
+  mqttClient.setCallback(onMqttMessage);
+
+  if (mqttClient.connect(MQTT_CLIENT_ID)) {
+    mqttClient.subscribe(MQTT_TOPIC);
+    Serial.printf("MQTT connected, subscribed to %s\n", MQTT_TOPIC);
+  } else {
+    Serial.printf("MQTT connect failed, rc=%d — will retry\n", mqttClient.state());
+  }
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Render push notification screen (always white background)
+//
+//  y=8:   [SOURCE] label                        16px
+//  y=30:  title                                 24px
+//  y=60:  body (up to 3 lines, 16px, ~45 chars/line)
+//  y=255: "press any button or wait 30s"        12px
+// ─────────────────────────────────────────────────────────────────────
+void renderNotification() {
+  // Source label in brackets, e.g. "[CLI]" or "[SLACK]"
+  char sourceLabel[40];
+  char sourceUp[32];
+  strncpy(sourceUp, notifSource, sizeof(sourceUp) - 1);
+  sourceUp[sizeof(sourceUp) - 1] = '\0';
+  for (int i = 0; sourceUp[i]; i++) sourceUp[i] = toupper(sourceUp[i]);
+  snprintf(sourceLabel, sizeof(sourceLabel), "[%s]", sourceUp);
+  EPD_ShowString(10, 8, sourceLabel, 16, BLACK);
+
+  // Title — truncated to 30 chars for 24px font
+  char titleLine[31];
+  strncpy(titleLine, notifTitle, 30);
+  titleLine[30] = '\0';
+  EPD_ShowString(10, 30, titleLine, 24, BLACK);
+
+  // Body — up to 3 lines, 45 chars per line (16px font, 396px wide)
+  showFlatText(notifBody, 10, 60, 16, 45, 3, BLACK);
+
+  // Dismiss hint at bottom
+  EPD_ShowString(10, 255, "press any button or wait 30s", 12, BLACK);
 }

@@ -35,3 +35,10 @@
 
 // ── Refresh ───────────────────────────────────────────────────────────
 #define REFRESH_INTERVAL_MS (1UL * 60UL * 1000UL)  // 1 minute
+
+// ── MQTT push notifications ───────────────────────────────────────────
+#define MQTT_BROKER      "192.168.1.100"   // change to broker IP
+#define MQTT_PORT        1883
+#define MQTT_TOPIC       "eink/push"
+#define MQTT_CLIENT_ID   "eink-display"
+#define NOTIF_TIMEOUT_MS 30000             // auto-dismiss after 30s
