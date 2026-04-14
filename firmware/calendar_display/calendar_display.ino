@@ -60,7 +60,9 @@ unsigned long lastButtonMs   = 0;
 bool          timeReady      = false;
 
 // ── Network state ─────────────────────────────────────────────────────
-bool wifiOk = false;
+bool          wifiOk          = false;
+int           wifiRetryDelay  = 30000;   // ms; doubles on each failure, max 5 min
+unsigned long nextWifiRetryMs = 0;
 
 // ── Meeting mode + alerts ─────────────────────────────────────────────
 bool inMeetingMode            = false;
@@ -84,6 +86,7 @@ void renderDisplay();
 void renderMeeting();
 void renderOverview();
 void renderDetail();
+void renderDone();
 void pushToDisplay();
 void showMessage(const char* line1, const char* line2 = nullptr);
 void parseHourMin(const char* dt, int* h, int* m);
@@ -161,8 +164,20 @@ void loop() {
   checkMeetingMode();
 
   if (millis() - lastRefreshMs >= REFRESH_INTERVAL_MS) {
-    if (WiFi.status() != WL_CONNECTED) connectWiFi();
-    if (WiFi.status() == WL_CONNECTED) refreshData();
+    if (WiFi.status() != WL_CONNECTED) {
+      if (millis() >= nextWifiRetryMs) {
+        connectWiFi();
+        if (!wifiOk) {
+          // Exponential backoff: 30s → 60s → 120s → 240s → 300s max
+          wifiRetryDelay  = min(wifiRetryDelay * 2, 300000);
+          nextWifiRetryMs = millis() + wifiRetryDelay;
+        } else {
+          wifiRetryDelay  = 30000;
+          nextWifiRetryMs = 0;
+        }
+      }
+    }
+    if (wifiOk) refreshData();
     viewMode = VIEW_OVERVIEW;
     scrollIndex = 0;
     inMeetingMode = currentlyInMeeting();
@@ -209,8 +224,20 @@ void handleButtons() {
   if (digitalRead(BTN_HOME) == LOW) {
     lastButtonMs = millis();
     showMessage("Refreshing...");
-    if (WiFi.status() != WL_CONNECTED) connectWiFi();
-    if (WiFi.status() == WL_CONNECTED) refreshData();
+    if (WiFi.status() != WL_CONNECTED) {
+      if (millis() >= nextWifiRetryMs) {
+        connectWiFi();
+        if (!wifiOk) {
+          // Exponential backoff: 30s → 60s → 120s → 240s → 300s max
+          wifiRetryDelay  = min(wifiRetryDelay * 2, 300000);
+          nextWifiRetryMs = millis() + wifiRetryDelay;
+        } else {
+          wifiRetryDelay  = 30000;
+          nextWifiRetryMs = 0;
+        }
+      }
+    }
+    if (wifiOk) refreshData();
     viewMode = VIEW_OVERVIEW;
     scrollIndex = 0;
     inMeetingMode = currentlyInMeeting();
@@ -231,6 +258,10 @@ void connectWiFi() {
     delay(500);
   }
   wifiOk = (WiFi.status() == WL_CONNECTED);
+  if (wifiOk) {
+    wifiRetryDelay  = 30000;
+    nextWifiRetryMs = 0;
+  }
   Serial.print("WiFi: ");
   Serial.println(wifiOk ? "connected" : "FAILED");
 }
@@ -744,8 +775,15 @@ void renderDisplay() {
     renderDetail();
   else if (inMeetingMode)
     renderMeeting();
-  else
-    renderOverview();
+  else {
+    time_t nowCheck; time(&nowCheck);
+    struct tm* tCheck = localtime(&nowCheck);
+    int nowMinsCheck = tCheck->tm_hour * 60 + tCheck->tm_min;
+    if (eventCount == 0 && nowMinsCheck >= 12 * 60)
+      renderDone();
+    else
+      renderOverview();
+  }
 
   pushToDisplay();
 }
@@ -918,6 +956,62 @@ void renderMeeting() {
 //   └─────────────────┴──────────────────────────────────────────┘ y=271
 //
 // ─────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────
+// Done for today: no upcoming events and it's past noon
+// ─────────────────────────────────────────────────────────────────────
+void renderDone() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+
+  snprintf(lastUpdated, sizeof(lastUpdated), "%02d:%02d", t->tm_hour, t->tm_min);
+
+  // "YOU'RE DONE FOR TODAY" centered, 24px
+  const char* msg = "YOU'RE DONE FOR TODAY";
+  int msgLen = (int)strlen(msg);
+  int msgX = max(10, (792 - msgLen * 12) / 2);
+  EPD_ShowString(msgX, 90, msg, 24, BLACK);
+
+  // Current time centered, 48px
+  int hr12 = t->tm_hour % 12;
+  if (hr12 == 0) hr12 = 12;
+  char timeStr[12];
+  snprintf(timeStr, sizeof(timeStr), "%d:%02d %s",
+           hr12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
+  int timeLen = (int)strlen(timeStr);
+  int timeX = max(10, (792 - timeLen * 24) / 2);
+  EPD_ShowString(timeX, 130, timeStr, 48, BLACK);
+
+  // OOO names if any (bottom left, same as overview)
+  if (strlen(oooNames) > 0) {
+    EPD_ShowString(10, 210, "OOO:", 12, BLACK);
+    char oooCopy[128];
+    strncpy(oooCopy, oooNames, 127);
+    oooCopy[127] = '\0';
+    int oooY = 226;
+    char* tok = strtok(oooCopy, "\n");
+    int shown = 0;
+    while (tok && shown < 2 && oooY < 245) {
+      char nameLine[28];
+      strncpy(nameLine, tok, 26);
+      nameLine[26] = '\0';
+      EPD_ShowString(10, oooY, nameLine, 12, BLACK);
+      oooY += 16;
+      shown++;
+      tok = strtok(nullptr, "\n");
+    }
+  }
+
+  // "upd HH:MM" or "NO WIFI" bottom left
+  if (wifiOk) {
+    char updStr[16];
+    snprintf(updStr, sizeof(updStr), "upd %s", lastUpdated);
+    EPD_ShowString(10, 255, updStr, 12, BLACK);
+  } else {
+    EPD_ShowString(10, 255, "NO WIFI", 12, BLACK);
+  }
+}
+
 void renderOverview() {
   time_t now;
   time(&now);
@@ -1016,6 +1110,10 @@ void renderOverview() {
       titleLine[titleMax] = '\0';
 
       if (isNow) {
+        EPD_DrawRectangle(evX - 2, titleY - 2, evX + evW, titleY + 50, FG_COLOR, 1);
+        EPD_ShowString(evX, titleY, titleLine, 48, BG_COLOR);
+      } else if (!soonAlert && minutesUntil > 0 && minutesUntil <= 15) {
+        // Starting soon (T-15 to T-5): invert title as a heads-up
         EPD_DrawRectangle(evX - 2, titleY - 2, evX + evW, titleY + 50, FG_COLOR, 1);
         EPD_ShowString(evX, titleY, titleLine, 48, BG_COLOR);
       } else {
