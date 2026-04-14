@@ -43,7 +43,10 @@ struct CalEvent {
 CalEvent events[MAX_EVENTS];
 int      eventCount   = 0;
 char     lastUpdated[8] = "--:--";
-char     oooNames[128] = "";   // comma-separated OOO people, populated each fetch
+char     oooNames[128] = "";   // newline-separated OOO people, populated each fetch
+#define MAX_CALENDARS 15
+char     calendarIds[MAX_CALENDARS][80];
+int      calendarCount = 0;
 
 // ── View state ────────────────────────────────────────────────────────
 #define VIEW_OVERVIEW 0
@@ -234,7 +237,10 @@ void connectWiFi() {
 // ─────────────────────────────────────────────────────────────────────
 void refreshData() {
   String token = getAccessToken();
-  if (token.length() > 0) fetchEvents(token);
+  if (token.length() == 0) return;
+  fetchCalendarList(token);
+  fetchEvents(token);
+  fetchOOO(token);
 }
 
 
@@ -294,6 +300,174 @@ String urlEncodeTime(time_t t) {
 
 
 // ─────────────────────────────────────────────────────────────────────
+// Fetch all accessible calendar IDs via calendarList API
+// ─────────────────────────────────────────────────────────────────────
+bool fetchCalendarList(const String& token) {
+  calendarCount = 0;
+
+  WiFiClientSecure client;
+  client.setInsecure();
+  HTTPClient http;
+  http.begin(client, "https://www.googleapis.com/calendar/v3/users/me/calendarList?fields=items(id)");
+  http.addHeader("Authorization", "Bearer " + token);
+  http.setTimeout(10000);
+
+  int code = http.GET();
+  if (code != 200) {
+    Serial.printf("CalendarList error HTTP %d\n", code);
+    http.end();
+    return false;
+  }
+
+  String resp = http.getString();
+  http.end();
+
+  JsonDocument filter;
+  filter["items"][0]["id"] = true;
+
+  JsonDocument doc;
+  if (deserializeJson(doc, resp, DeserializationOption::Filter(filter)) != DeserializationError::Ok) return false;
+  resp = "";
+
+  for (JsonObject item : doc["items"].as<JsonArray>()) {
+    if (calendarCount >= MAX_CALENDARS) break;
+    const char* id = item["id"] | "";
+    if (strlen(id) > 0) {
+      strncpy(calendarIds[calendarCount], id, 79);
+      calendarIds[calendarCount][79] = '\0';
+      Serial.printf("Calendar ID: %s\n", calendarIds[calendarCount]);
+      calendarCount++;
+    }
+  }
+  Serial.printf("Found %d calendars\n", calendarCount);
+  return true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Scan all calendars for today's OOO/PTO all-day events
+// ─────────────────────────────────────────────────────────────────────
+
+// Returns true if the calendar ID looks like a junk/system calendar to skip
+bool isSystemCalendar(const char* id) {
+  // Holiday calendars
+  if (strstr(id, "#holiday@")) return true;
+  // Contact birthday calendars
+  if (strstr(id, "#contacts@")) return true;
+  return false;
+}
+
+// Extract person name from title: everything before "OOO" or "PTO", trimmed.
+// e.g. "Diego OOO" → "Diego", "Lucas T - OOO" → "Lucas T"
+// Returns false if nothing useful found.
+bool extractNameFromTitle(const char* summary, char* nameOut, int maxLen) {
+  char titleUp[64];
+  strncpy(titleUp, summary, 63);
+  titleUp[63] = '\0';
+  for (int i = 0; titleUp[i]; i++) titleUp[i] = toupper(titleUp[i]);
+
+  char* pos = strstr(titleUp, "OOO");
+  if (!pos) pos = strstr(titleUp, "PTO");
+  if (!pos) return false;
+
+  int nameLen = (int)(pos - titleUp);
+  // Trim trailing spaces and dashes
+  while (nameLen > 0 && (summary[nameLen-1] == ' ' || summary[nameLen-1] == '-')) nameLen--;
+  if (nameLen <= 0) return false;
+
+  int copy = nameLen < maxLen - 1 ? nameLen : maxLen - 1;
+  strncpy(nameOut, summary, copy);
+  nameOut[copy] = '\0';
+  return true;
+}
+
+bool fetchOOO(const String& token) {
+  oooNames[0] = '\0';
+
+  // Today local midnight → tomorrow local midnight
+  time_t now;
+  time(&now);
+  struct tm tDay = *localtime(&now);
+  tDay.tm_hour = 0; tDay.tm_min = 0; tDay.tm_sec = 0;
+  time_t todayStart = mktime(&tDay);
+  time_t todayEnd   = todayStart + 86400;
+
+  for (int ci = 0; ci < calendarCount; ci++) {
+    if (isSystemCalendar(calendarIds[ci])) {
+      Serial.printf("Skipping system calendar: %s\n", calendarIds[ci]);
+      continue;
+    }
+
+    String calId = String(calendarIds[ci]);
+    calId.replace("@", "%40");
+
+    String url = "https://www.googleapis.com/calendar/v3/calendars/";
+    url += calId;
+    url += "/events?singleEvents=true";
+    url += "&timeMin=" + urlEncodeTime(todayStart);
+    url += "&timeMax=" + urlEncodeTime(todayEnd);
+    url += "&fields=items(summary,eventType,start/date)";
+
+    WiFiClientSecure client;
+    client.setInsecure();
+    HTTPClient http;
+    http.begin(client, url);
+    http.addHeader("Authorization", "Bearer " + token);
+    http.setTimeout(10000);
+
+    int code = http.GET();
+    if (code != 200) {
+      Serial.printf("OOO fetch [%s] HTTP %d\n", calendarIds[ci], code);
+      http.end();
+      continue;
+    }
+
+    String resp = http.getString();
+    http.end();
+
+    JsonDocument filter;
+    filter["items"][0]["summary"] = true;
+    filter["items"][0]["eventType"] = true;
+    filter["items"][0]["start"]["date"] = true;
+
+    JsonDocument doc;
+    if (deserializeJson(doc, resp, DeserializationOption::Filter(filter)) != DeserializationError::Ok) continue;
+    resp = "";
+
+    for (JsonObject item : doc["items"].as<JsonArray>()) {
+      // Only all-day events
+      const char* startDate = item["start"]["date"] | "";
+      if (strlen(startDate) == 0) continue;
+
+      const char* evType  = item["eventType"] | "";
+      const char* summary = item["summary"]   | "";
+
+      // Build uppercase title for matching
+      char titleUp[64];
+      strncpy(titleUp, summary, 63);
+      titleUp[63] = '\0';
+      for (int i = 0; titleUp[i]; i++) titleUp[i] = toupper(titleUp[i]);
+      bool titleMatch = (strstr(titleUp, "OOO") || strstr(titleUp, "PTO"));
+      bool typeMatch  = (strcmp(evType, "outOfOffice") == 0);
+
+      if (!titleMatch && !typeMatch) continue;
+
+      // Extract name from title (e.g. "Diego OOO" → "Diego")
+      char name[48];
+      if (!extractNameFromTitle(summary, name, sizeof(name))) continue;
+      if (strstr(oooNames, name)) continue;  // deduplicate
+
+      int curLen = strlen(oooNames);
+      if (curLen > 0 && curLen + 1 < 127) { strcat(oooNames, "\n"); curLen++; }
+      if (curLen + (int)strlen(name) < 127) strncat(oooNames, name, 127 - curLen);
+      Serial.printf("OOO: %s\n", name);
+    }
+  }
+  return true;
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
 // Fetch calendar events (now-20min → now+4h)
 // ─────────────────────────────────────────────────────────────────────
 bool fetchEvents(const String& token) {
@@ -337,10 +511,7 @@ bool fetchEvents(const String& token) {
   JsonDocument filter;
   filter["items"][0]["summary"] = true;
   filter["items"][0]["description"] = true;
-  filter["items"][0]["eventType"] = true;
-  filter["items"][0]["organizer"]["displayName"] = true;
   filter["items"][0]["start"]["dateTime"] = true;
-  filter["items"][0]["start"]["date"] = true;
   filter["items"][0]["end"]["dateTime"] = true;
   filter["items"][0]["attendees"][0]["displayName"] = true;
 
@@ -354,7 +525,6 @@ bool fetchEvents(const String& token) {
   }
 
   eventCount = 0;
-  oooNames[0] = '\0';
 
   JsonArray items = doc["items"].as<JsonArray>();
   for (JsonObject item : items) {
@@ -391,34 +561,7 @@ bool fetchEvents(const String& token) {
     const char* startDate = item["start"]["date"]     | "";
     const char* endDT     = item["end"]["dateTime"]   | "";
 
-    if (strlen(startDT) == 0) {
-      // Detect OOO/PTO all-day events by eventType or title keywords
-      const char* evType  = item["eventType"] | "";
-      const char* summary = item["summary"]   | "";
-
-      // Case-insensitive title check for "OOO" or "PTO"
-      char titleUp[64];
-      strncpy(titleUp, summary, 63);
-      titleUp[63] = '\0';
-      for (int ci = 0; titleUp[ci]; ci++) titleUp[ci] = toupper(titleUp[ci]);
-      bool titleMatch = (strstr(titleUp, "OOO") || strstr(titleUp, "PTO"));
-
-      if (strcmp(evType, "outOfOffice") == 0 || titleMatch) {
-        const char* name = item["organizer"]["displayName"] | "";
-        if (strlen(name) > 0) {
-          int curLen = strlen(oooNames);
-          if (curLen > 0 && curLen + 1 < 127) {
-            strcat(oooNames, "\n");
-            curLen++;
-          }
-          int nameLen = strlen(name);
-          if (curLen + nameLen < 127) {
-            strncat(oooNames, name, 127 - curLen);
-          }
-        }
-      }
-      continue;
-    }
+    if (strlen(startDT) == 0) continue;  // skip all-day events (OOO handled by fetchOOO)
 
     parseHourMin(startDT, &ev.startHour, &ev.startMin);
     parseHourMin(endDT,   &ev.endHour,   &ev.endMin);
