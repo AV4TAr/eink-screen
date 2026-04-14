@@ -177,11 +177,21 @@ void loop() {
         }
       }
     }
+    // Check if already in "done" mode before fetching
+    time_t _now; time(&_now);
+    int _nowMins = localtime(&_now)->tm_hour * 60 + localtime(&_now)->tm_min;
+    bool wasDone = (eventCount == 0 && _nowMins >= 12 * 60);
+
     if (wifiOk) refreshData();
     viewMode = VIEW_OVERVIEW;
     scrollIndex = 0;
     inMeetingMode = currentlyInMeeting();
-    renderDisplay();
+
+    bool isDone = (eventCount == 0 && _nowMins >= 12 * 60);
+    // Skip re-render if we were already on the done screen and nothing changed
+    if (!wasDone || !isDone) {
+      renderDisplay();
+    }
     lastRefreshMs = millis();
   }
 
@@ -960,27 +970,11 @@ void renderMeeting() {
 // Done for today: no upcoming events and it's past noon
 // ─────────────────────────────────────────────────────────────────────
 void renderDone() {
-  time_t now;
-  time(&now);
-  struct tm* t = localtime(&now);
-
-  snprintf(lastUpdated, sizeof(lastUpdated), "%02d:%02d", t->tm_hour, t->tm_min);
-
-  // "YOU'RE DONE FOR TODAY" centered, 24px
-  const char* msg = "YOU'RE DONE FOR TODAY";
-  int msgLen = (int)strlen(msg);
-  int msgX = max(10, (792 - msgLen * 12) / 2);
-  EPD_ShowString(msgX, 90, msg, 24, BLACK);
-
-  // Current time centered, 48px
-  int hr12 = t->tm_hour % 12;
-  if (hr12 == 0) hr12 = 12;
-  char timeStr[12];
-  snprintf(timeStr, sizeof(timeStr), "%d:%02d %s",
-           hr12, t->tm_min, t->tm_hour < 12 ? "AM" : "PM");
-  int timeLen = (int)strlen(timeStr);
-  int timeX = max(10, (792 - timeLen * 24) / 2);
-  EPD_ShowString(timeX, 130, timeStr, 48, BLACK);
+  // Static screen — no clock, no re-render needed once shown
+  const char* line1 = "YOU'RE DONE";
+  const char* line2 = "FOR TODAY";
+  EPD_ShowString(max(10, (792 - (int)strlen(line1) * 24) / 2), 80,  line1, 48, BLACK);
+  EPD_ShowString(max(10, (792 - (int)strlen(line2) * 24) / 2), 140, line2, 48, BLACK);
 
   // OOO names if any (bottom left, same as overview)
   if (strlen(oooNames) > 0) {
