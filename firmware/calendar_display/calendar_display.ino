@@ -1173,6 +1173,31 @@ void renderOverview() {
     }
 
   }
+
+  // ── Meeting density bar (8am–6pm, 11 hourly blocks) ─────────────────
+  {
+    const int DENSITY_Y      = 258;
+    const int DENSITY_H      = 10;
+    const int BLOCK_W        = 48;
+    const int BLOCK_GAP      = 2;
+    const int DENSITY_X      = 202;
+    const int WORKDAY_START  = 8 * 60;   // 480 mins
+    const int NUM_SLOTS      = 11;       // 8am..6pm
+
+    for (int h = 0; h < NUM_SLOTS; h++) {
+      int slotStart = WORKDAY_START + h * 60;
+      int slotEnd   = slotStart + 60;
+      bool busy     = false;
+      for (int i = 0; i < eventCount && !busy; i++) {
+        int evStart = events[i].startHour * 60 + events[i].startMin;
+        int evEnd   = events[i].endHour   * 60 + events[i].endMin;
+        if (evStart < slotEnd && evEnd > slotStart) busy = true;
+      }
+      int bx = DENSITY_X + h * (BLOCK_W + BLOCK_GAP);
+      EPD_DrawRectangle(bx, DENSITY_Y, bx + BLOCK_W, DENSITY_Y + DENSITY_H,
+                        FG_COLOR, busy ? 1 : 0);
+    }
+  }
 }
 
 
