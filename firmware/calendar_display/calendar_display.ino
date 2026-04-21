@@ -1639,8 +1639,8 @@ void renderDoubleMeeting() {
     int secElapsed  = nowMins - secStart;
     int secDuration = secEnd - secStart;
     const int sbX      = RP_X;
-    const int sbY      = 200;
-    const int sbH      = 20;
+    const int sbY      = 182;
+    const int sbH      = 46;
     const int sbTotalW = 210;
     const int sbGap    = 4;
     int sbBlocks       = max(1, (secDuration + 9) / 10);
