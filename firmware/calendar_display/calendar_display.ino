@@ -79,14 +79,16 @@ int  lastMeetingCheckMins     = -1;
 #define BG_COLOR (inMeetingMode ? BLACK : WHITE)
 
 // ── MQTT + push notifications ─────────────────────────────────────────
-WiFiClient   mqttWifiClient;
-PubSubClient mqttClient(mqttWifiClient);
-bool         notifPending    = false;
-char         notifTitle[64]  = "";
-char         notifBody[160]  = "";
-char         notifSource[32] = "";
-unsigned long notifShownAt   = 0;
-bool         inNotifMode     = false;
+WiFiClient    mqttWifiClient;
+PubSubClient  mqttClient(mqttWifiClient);
+bool          notifPending     = false;
+char          notifTitle[64]   = "";
+char          notifBody[160]   = "";
+char          notifSource[32]  = "";
+unsigned long notifShownAt     = 0;
+bool          inNotifMode      = false;
+unsigned long nextMqttRetryMs  = 0;
+const unsigned long MQTT_RETRY_INTERVAL_MS = 10000;  // retry every 10s max
 
 // ── Forward declarations ──────────────────────────────────────────────
 void connectWiFi();
@@ -180,9 +182,11 @@ void loop() {
   checkMeetingMode();
 
   // ── MQTT ──────────────────────────────────────────────────────────────
-  mqttClient.loop();
-  if (!mqttClient.connected() && WiFi.status() == WL_CONNECTED) {
+  if (mqttClient.connected()) {
+    mqttClient.loop();
+  } else if (WiFi.status() == WL_CONNECTED && millis() >= nextMqttRetryMs) {
     connectMQTT();
+    nextMqttRetryMs = millis() + MQTT_RETRY_INTERVAL_MS;
   }
 
   // ── Notification display ──────────────────────────────────────────────
