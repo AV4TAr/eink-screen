@@ -846,20 +846,21 @@ void renderDisplay() {
     time_t nowT2; time(&nowT2);
     struct tm* tNow2 = localtime(&nowT2);
     int nowMins2 = tNow2->tm_hour * 60 + tNow2->tm_min;
-    // Find the active meeting first
+    // Find the active meeting first (by index to skip only it, not all active)
     int primaryEnd2 = -1;
+    int primaryIdx2 = -1;
     for (int i = 0; i < eventCount; i++) {
       int s = events[i].startHour * 60 + events[i].startMin;
       int e = events[i].endHour   * 60 + events[i].endMin;
-      if (nowMins2 >= s && nowMins2 < e) { primaryEnd2 = e; break; }
+      if (nowMins2 >= s && nowMins2 < e) { primaryEnd2 = e; primaryIdx2 = i; break; }
     }
-    // Check if any other meeting starts before the active one ends
+    // Check if any OTHER meeting overlaps (started or upcoming, ends after now)
     bool hasOverlap = false;
     if (primaryEnd2 > 0) {
       for (int i = 0; i < eventCount; i++) {
+        if (i == primaryIdx2) continue;  // skip primary only
         int s = events[i].startHour * 60 + events[i].startMin;
         int e = events[i].endHour   * 60 + events[i].endMin;
-        if (nowMins2 >= s && nowMins2 < e) continue;  // skip primary
         if (s < primaryEnd2 && e > nowMins2) { hasOverlap = true; break; }
       }
     }
