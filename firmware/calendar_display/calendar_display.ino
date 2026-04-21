@@ -95,6 +95,7 @@ bool fetchEvents(const String& token);
 void refreshData();
 void renderDisplay();
 void renderMeeting();
+void renderDoubleMeeting();
 void renderOverview();
 void renderDetail();
 void renderDone();
@@ -836,9 +837,23 @@ void renderDisplay() {
 
   if (viewMode == VIEW_DETAIL && eventCount > 0)
     renderDetail();
-  else if (inMeetingMode)
-    renderMeeting();
-  else {
+  else if (inMeetingMode) {
+    // Count overlapping / imminent meetings
+    time_t nowT2; time(&nowT2);
+    struct tm* tNow2 = localtime(&nowT2);
+    int nowMins2 = tNow2->tm_hour * 60 + tNow2->tm_min;
+    int overlapCount = 0;
+    for (int i = 0; i < eventCount; i++) {
+      int s = events[i].startHour * 60 + events[i].startMin;
+      int e = events[i].endHour   * 60 + events[i].endMin;
+      if (nowMins2 >= s && nowMins2 < e) overlapCount++;
+      else if (s > nowMins2 && s - nowMins2 <= 2) overlapCount++;
+    }
+    if (overlapCount >= 2)
+      renderDoubleMeeting();
+    else
+      renderMeeting();
+  } else {
     time_t nowCheck; time(&nowCheck);
     struct tm* tCheck = localtime(&nowCheck);
     int nowMinsCheck = tCheck->tm_hour * 60 + tCheck->tm_min;
@@ -1442,4 +1457,187 @@ void renderNotification() {
 
   // Dismiss hint at bottom
   EPD_ShowString(10, 255, "press any button or wait 30s", 12, BLACK);
+}
+
+
+// ─────────────────────────────────────────────────────────────────────
+// Double-booking split view: shown when two meetings overlap.
+// 70/30 horizontal split on black background.
+//
+//  x=0                   x=554  x=562   x=570              x=792
+//   ┌──────────────────────┬───────┬──────────────────────────┐ y=0
+//   │  LEFT (primary)      │  │    │  RIGHT (secondary)       │
+//   │  554px wide          │  │    │  222px wide              │
+//   └──────────────────────┴───────┴──────────────────────────┘ y=271
+//
+// ─────────────────────────────────────────────────────────────────────
+void renderDoubleMeeting() {
+  time_t now;
+  time(&now);
+  struct tm* t = localtime(&now);
+  int nowMins = t->tm_hour * 60 + t->tm_min;
+
+  // Find primary (first active/imminent) and secondary
+  CalEvent* primary   = nullptr;
+  CalEvent* secondary = nullptr;
+  for (int i = 0; i < eventCount; i++) {
+    int s = events[i].startHour * 60 + events[i].startMin;
+    int e = events[i].endHour   * 60 + events[i].endMin;
+    bool active = (nowMins >= s && nowMins < e);
+    bool soon   = (!active && s > nowMins && s - nowMins <= 2);
+    if (active || soon) {
+      if (!primary)        primary   = &events[i];
+      else if (!secondary) { secondary = &events[i]; break; }
+    }
+  }
+  // Fallback: not enough meetings found
+  if (!primary || !secondary) { renderMeeting(); return; }
+
+  // ── Divider ───────────────────────────────────────────────────────
+  EPD_DrawLine(562, 0, 562, 271, WHITE);
+
+  // ─────────────────────────────────────────────────────────────────
+  // LEFT PANEL  (x=0..554, primary meeting)
+  // ─────────────────────────────────────────────────────────────────
+  const int LP_X     = 10;   // left margin inside left panel
+  const int LP_MAXW  = 554;  // panel width
+
+  // Header
+  EPD_ShowString(LP_X, 14, "MEETING IN PROGRESS", 16, WHITE);
+
+  // Title — 48px if ≤13 chars, else 24px; truncated to panel width
+  int titleLen  = strlen(primary->title);
+  int titleSize = (titleLen <= 13) ? 48 : 24;
+  int titleMaxChars = (titleSize == 48) ? 13 : 27;  // 13*24=312px, 27*12=324px < 554px
+  char titleBuf[48];
+  strncpy(titleBuf, primary->title, titleMaxChars);
+  titleBuf[titleMaxChars] = '\0';
+  EPD_ShowString(LP_X, 46, titleBuf, titleSize, WHITE);
+
+  // Time + remaining
+  int startMins    = primary->startHour * 60 + primary->startMin;
+  int endMins      = primary->endHour   * 60 + primary->endMin;
+  int remainMins   = endMins - nowMins;
+  int elapsedMins  = nowMins - startMins;
+  int durationMins = endMins - startMins;
+
+  int timeY = 46 + titleSize + 10;
+  char timeLine[56];
+  snprintf(timeLine, sizeof(timeLine), "%02d:%02d - %02d:%02d   %d min left",
+           primary->startHour, primary->startMin,
+           primary->endHour,   primary->endMin, remainMins);
+  EPD_ShowString(LP_X, timeY, timeLine, 16, WHITE);
+
+  // Attendees (1 line, max 65 chars at 16px — 65*8=520px < 554px)
+  int extraY = timeY + 20;
+  if (strlen(primary->attendees) > 0) {
+    extraY = showFlatText(primary->attendees, LP_X, extraY, 16, 65, 1, WHITE) + 4;
+  }
+  // Description (1 line, same width limit)
+  if (strlen(primary->description) > 0 && extraY < 162) {
+    showFlatText(primary->description, LP_X, extraY, 16, 65, 1, WHITE);
+  }
+
+  // Block progress bar (barX=10, totalW=534px)
+  {
+    const int barX    = 10;
+    const int barY    = 182;
+    const int barH    = 46;
+    const int totalW  = 534;
+    const int gap     = 8;
+    int numBlocks     = max(1, (durationMins + 9) / 10);
+    int elapsedBlocks = elapsedMins / 10;
+    int blockW        = (totalW - gap * (numBlocks - 1)) / numBlocks;
+
+    for (int b = 0; b < numBlocks; b++) {
+      int bx = barX + b * (blockW + gap);
+      if (b < elapsedBlocks) {
+        EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 1);
+      } else if (b == elapsedBlocks) {
+        int partialW = (elapsedMins % 10) * blockW / 10;
+        if (partialW > 0)
+          EPD_DrawRectangle(bx, barY, bx + partialW, barY + barH, WHITE, 1);
+        EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 0);
+      } else {
+        EPD_DrawRectangle(bx, barY, bx + blockW, barY + barH, WHITE, 0);
+      }
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────
+  // RIGHT PANEL  (x=570..792, secondary meeting)
+  // ─────────────────────────────────────────────────────────────────
+  const int RP_X    = 570;
+  const int RP_W    = 222;   // 792-570
+
+  // "ALSO" if already started, "UP NEXT" if upcoming
+  int secStart = secondary->startHour * 60 + secondary->startMin;
+  int secEnd   = secondary->endHour   * 60 + secondary->endMin;
+  bool secActive = (nowMins >= secStart && nowMins < secEnd);
+  EPD_ShowString(RP_X, 14, secActive ? "ALSO" : "UP NEXT", 12, WHITE);
+
+  // Title — 16px, max 13 chars (13*8=104px < 222px), truncate with "..."
+  char secTitle[16];
+  int secLen = strlen(secondary->title);
+  if (secLen > 13) {
+    strncpy(secTitle, secondary->title, 10);
+    secTitle[10] = '\0';
+    strcat(secTitle, "...");
+  } else {
+    strncpy(secTitle, secondary->title, 13);
+    secTitle[13] = '\0';
+  }
+  EPD_ShowString(RP_X, 30, secTitle, 16, WHITE);
+
+  // Time range
+  char secTime[20];
+  snprintf(secTime, sizeof(secTime), "%02d:%02d - %02d:%02d",
+           secondary->startHour, secondary->startMin,
+           secondary->endHour,   secondary->endMin);
+  EPD_ShowString(RP_X, 52, secTime, 12, WHITE);
+
+  // Attendees — 12px, max 18 chars (18*6=108px < 222px)
+  if (strlen(secondary->attendees) > 0) {
+    showFlatText(secondary->attendees, RP_X, 70, 12, 18, 1, WHITE);
+  }
+
+  // Countdown or progress bar
+  if (!secActive) {
+    // Not yet started — "in X min"
+    int inMins = secStart - nowMins;
+    char countdown[20];
+    snprintf(countdown, sizeof(countdown), "in %d min", inMins);
+    EPD_ShowString(RP_X, 90, countdown, 12, WHITE);
+  } else {
+    // Active — small outlined progress bar (totalW=210px)
+    int secElapsed  = nowMins - secStart;
+    int secDuration = secEnd - secStart;
+    const int sbX     = RP_X;
+    const int sbY     = 200;
+    const int sbH     = 20;
+    const int sbTotalW = 210;
+    const int sbGap   = 4;
+    int sbBlocks      = max(1, (secDuration + 9) / 10);
+    int sbElapsedBlks = secElapsed / 10;
+    int sbBlockW      = (sbTotalW - sbGap * (sbBlocks - 1)) / sbBlocks;
+
+    for (int b = 0; b < sbBlocks; b++) {
+      int bx = sbX + b * (sbBlockW + sbGap);
+      if (b < sbElapsedBlks) {
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 1);
+      } else if (b == sbElapsedBlks) {
+        int partialW = (secElapsed % 10) * sbBlockW / 10;
+        if (partialW > 0)
+          EPD_DrawRectangle(bx, sbY, bx + partialW, sbY + sbH, WHITE, 1);
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 0);
+      } else {
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 0);
+      }
+    }
+  }
+
+  // NO WIFI indicator (bottom left)
+  if (!wifiOk) {
+    EPD_ShowString(LP_X, 255, "NO WIFI", 12, WHITE);
+  }
 }
