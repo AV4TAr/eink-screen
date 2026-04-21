@@ -842,18 +842,28 @@ void renderDisplay() {
   if (viewMode == VIEW_DETAIL && eventCount > 0)
     renderDetail();
   else if (inMeetingMode) {
-    // Count overlapping / imminent meetings
+    // Show split view if any upcoming meeting overlaps with the active one
     time_t nowT2; time(&nowT2);
     struct tm* tNow2 = localtime(&nowT2);
     int nowMins2 = tNow2->tm_hour * 60 + tNow2->tm_min;
-    int overlapCount = 0;
+    // Find the active meeting first
+    int primaryEnd2 = -1;
     for (int i = 0; i < eventCount; i++) {
       int s = events[i].startHour * 60 + events[i].startMin;
       int e = events[i].endHour   * 60 + events[i].endMin;
-      if (nowMins2 >= s && nowMins2 < e) overlapCount++;
-      else if (s > nowMins2 && s - nowMins2 <= 2) overlapCount++;
+      if (nowMins2 >= s && nowMins2 < e) { primaryEnd2 = e; break; }
     }
-    if (overlapCount >= 2)
+    // Check if any other meeting starts before the active one ends
+    bool hasOverlap = false;
+    if (primaryEnd2 > 0) {
+      for (int i = 0; i < eventCount; i++) {
+        int s = events[i].startHour * 60 + events[i].startMin;
+        int e = events[i].endHour   * 60 + events[i].endMin;
+        if (nowMins2 >= s && nowMins2 < e) continue;  // skip primary
+        if (s < primaryEnd2 && e > nowMins2) { hasOverlap = true; break; }
+      }
+    }
+    if (hasOverlap)
       renderDoubleMeeting();
     else
       renderMeeting();
@@ -1481,21 +1491,23 @@ void renderDoubleMeeting() {
   struct tm* t = localtime(&now);
   int nowMins = t->tm_hour * 60 + t->tm_min;
 
-  // Find primary (first active/imminent) and secondary
+  // Find primary (currently active) and secondary (overlaps before primary ends)
   CalEvent* primary   = nullptr;
   CalEvent* secondary = nullptr;
   for (int i = 0; i < eventCount; i++) {
     int s = events[i].startHour * 60 + events[i].startMin;
     int e = events[i].endHour   * 60 + events[i].endMin;
-    bool active = (nowMins >= s && nowMins < e);
-    bool soon   = (!active && s > nowMins && s - nowMins <= 2);
-    if (active || soon) {
-      if (!primary)        primary   = &events[i];
-      else if (!secondary) { secondary = &events[i]; break; }
-    }
+    if (nowMins >= s && nowMins < e) { primary = &events[i]; break; }
   }
-  // Fallback: not enough meetings found
-  if (!primary || !secondary) { renderMeeting(); return; }
+  if (!primary) { renderMeeting(); return; }
+  int primaryEnd = primary->endHour * 60 + primary->endMin;
+  for (int i = 0; i < eventCount; i++) {
+    if (&events[i] == primary) continue;
+    int s = events[i].startHour * 60 + events[i].startMin;
+    int e = events[i].endHour   * 60 + events[i].endMin;
+    if (s < primaryEnd && e > nowMins) { secondary = &events[i]; break; }
+  }
+  if (!secondary) { renderMeeting(); return; }
 
   // ── Divider ───────────────────────────────────────────────────────
   EPD_DrawLine(562, 0, 562, 271, WHITE);
@@ -1570,72 +1582,81 @@ void renderDoubleMeeting() {
 
   // ─────────────────────────────────────────────────────────────────
   // RIGHT PANEL  (x=570..792, secondary meeting)
+  // White bg when not yet started (upcoming), black bg when active (same as left)
   // ─────────────────────────────────────────────────────────────────
   const int RP_X    = 570;
-  const int RP_W    = 222;   // 792-570
+  const int RP_W    = 222;
 
-  // "ALSO" if already started, "UP NEXT" if upcoming
   int secStart = secondary->startHour * 60 + secondary->startMin;
   int secEnd   = secondary->endHour   * 60 + secondary->endMin;
   bool secActive = (nowMins >= secStart && nowMins < secEnd);
-  EPD_ShowString(RP_X, 14, secActive ? "ALSO" : "UP NEXT", 12, WHITE);
 
-  // Title — 16px, max 13 chars (13*8=104px < 222px), truncate with "..."
-  char secTitle[16];
+  // Fill right panel background white when upcoming
+  uint8_t rpFg = WHITE;
+  uint8_t rpBg = BLACK;
+  if (!secActive) {
+    EPD_DrawRectangle(563, 0, 792, 271, WHITE, 1);  // white fill
+    rpFg = BLACK;
+    rpBg = WHITE;
+  }
+
+  // Label
+  EPD_ShowString(RP_X, 14, secActive ? "ALSO" : "UP NEXT", 12, rpFg);
+
+  // Title — 16px, max 24 chars (24*8=192px < 222px), truncate with "..."
+  char secTitle[28];
   int secLen = strlen(secondary->title);
-  if (secLen > 13) {
-    strncpy(secTitle, secondary->title, 10);
-    secTitle[10] = '\0';
+  if (secLen > 24) {
+    strncpy(secTitle, secondary->title, 21);
+    secTitle[21] = '\0';
     strcat(secTitle, "...");
   } else {
-    strncpy(secTitle, secondary->title, 13);
-    secTitle[13] = '\0';
+    strncpy(secTitle, secondary->title, 24);
+    secTitle[24] = '\0';
   }
-  EPD_ShowString(RP_X, 30, secTitle, 16, WHITE);
+  EPD_ShowString(RP_X, 30, secTitle, 16, rpFg);
 
   // Time range
   char secTime[20];
   snprintf(secTime, sizeof(secTime), "%02d:%02d - %02d:%02d",
            secondary->startHour, secondary->startMin,
            secondary->endHour,   secondary->endMin);
-  EPD_ShowString(RP_X, 52, secTime, 12, WHITE);
+  EPD_ShowString(RP_X, 52, secTime, 12, rpFg);
 
-  // Attendees — 12px, max 18 chars (18*6=108px < 222px)
+  // Attendees — 12px, max 36 chars (36*6=216px < 222px)
   if (strlen(secondary->attendees) > 0) {
-    showFlatText(secondary->attendees, RP_X, 70, 12, 18, 1, WHITE);
+    showFlatText(secondary->attendees, RP_X, 70, 12, 36, 1, rpFg);
   }
 
   // Countdown or progress bar
   if (!secActive) {
-    // Not yet started — "in X min"
     int inMins = secStart - nowMins;
     char countdown[20];
     snprintf(countdown, sizeof(countdown), "in %d min", inMins);
-    EPD_ShowString(RP_X, 90, countdown, 12, WHITE);
+    EPD_ShowString(RP_X, 90, countdown, 12, rpFg);
   } else {
-    // Active — small outlined progress bar (totalW=210px)
     int secElapsed  = nowMins - secStart;
     int secDuration = secEnd - secStart;
-    const int sbX     = RP_X;
-    const int sbY     = 200;
-    const int sbH     = 20;
+    const int sbX      = RP_X;
+    const int sbY      = 200;
+    const int sbH      = 20;
     const int sbTotalW = 210;
-    const int sbGap   = 4;
-    int sbBlocks      = max(1, (secDuration + 9) / 10);
-    int sbElapsedBlks = secElapsed / 10;
-    int sbBlockW      = (sbTotalW - sbGap * (sbBlocks - 1)) / sbBlocks;
+    const int sbGap    = 4;
+    int sbBlocks       = max(1, (secDuration + 9) / 10);
+    int sbElapsedBlks  = secElapsed / 10;
+    int sbBlockW       = (sbTotalW - sbGap * (sbBlocks - 1)) / sbBlocks;
 
     for (int b = 0; b < sbBlocks; b++) {
       int bx = sbX + b * (sbBlockW + sbGap);
       if (b < sbElapsedBlks) {
-        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 1);
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, rpFg, 1);
       } else if (b == sbElapsedBlks) {
         int partialW = (secElapsed % 10) * sbBlockW / 10;
         if (partialW > 0)
-          EPD_DrawRectangle(bx, sbY, bx + partialW, sbY + sbH, WHITE, 1);
-        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 0);
+          EPD_DrawRectangle(bx, sbY, bx + partialW, sbY + sbH, rpFg, 1);
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, rpFg, 0);
       } else {
-        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, WHITE, 0);
+        EPD_DrawRectangle(bx, sbY, bx + sbBlockW, sbY + sbH, rpFg, 0);
       }
     }
   }
