@@ -854,14 +854,14 @@ void renderDisplay() {
       int e = events[i].endHour   * 60 + events[i].endMin;
       if (nowMins2 >= s && nowMins2 < e) { primaryEnd2 = e; primaryIdx2 = i; break; }
     }
-    // Check if any OTHER meeting overlaps (started or upcoming, ends after now)
+    // Check if any OTHER meeting overlaps or starts within 45 min of current ending
     bool hasOverlap = false;
     if (primaryEnd2 > 0) {
       for (int i = 0; i < eventCount; i++) {
         if (i == primaryIdx2) continue;  // skip primary only
         int s = events[i].startHour * 60 + events[i].startMin;
         int e = events[i].endHour   * 60 + events[i].endMin;
-        if (s < primaryEnd2 && e > nowMins2) { hasOverlap = true; break; }
+        if (s < primaryEnd2 + 45 && e > nowMins2) { hasOverlap = true; break; }
       }
     }
     if (hasOverlap)
