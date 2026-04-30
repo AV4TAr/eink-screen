@@ -1,8 +1,20 @@
 # E-ink Calendar Display
 
-A Google Calendar agenda display for the **CrowPanel ESP32 5.79" E-paper HMI** (272×792, BW).
+A Google Calendar agenda display for the **CrowPanel ESP32 5.79" E-paper HMI** (272×792, BW). Refreshes every minute over WiFi.
 
-Shows current time, upcoming meetings, attendees, descriptions — and who on your team is OOO today. Refreshes every minute.
+---
+
+## Features
+
+- **Overview screen** — clock + date on the left; next meeting card (large title, time, attendees, description) on the right; 2 upcoming events below
+- **Meeting screen** — full black screen with white text when a meeting is in progress; title at 48px; block progress bar showing elapsed time
+- **Double-booking / back-to-back split view** — 70/30 split when two meetings overlap or the next meeting starts within 45 min; upcoming side shown in white, active side in black
+- **Detail view** — press BTN_DOWN to browse meetings with full attendee list and description
+- **OOO panel** — shows who on your team is out today (scans all calendars for OOO/PTO all-day events)
+- **Meeting alerts** — screen blinks at T-5min (3×) and T-1min (5×) before each meeting
+- **Density bar** — hourly busy/free blocks (8am–6pm) at the bottom of the overview
+- **Push notifications** — receive MQTT messages from any local tool; displayed full-screen with auto-dismiss after 30s
+- **Done screen** — "YOU'RE DONE FOR TODAY" when no events remain after noon
 
 ---
 
@@ -38,7 +50,7 @@ Shows current time, upcoming meetings, attendees, descriptions — and who on yo
 
 **Right panel — upcoming:** next 2 meetings at 16px.
 
-**During a meeting:** full black screen with white text, title at 48px, block progress bar showing elapsed time in 10-min chunks.
+**During a meeting:** full black screen with white text, title at 48px, block progress bar. If another meeting overlaps or starts within 45 min, a 70/30 split view shows both.
 
 **Alerts:** screen blinks at T-5min and T-1min before each meeting.
 
@@ -61,7 +73,7 @@ The board uses a CH340 USB-UART chip. macOS needs a driver:
 ### 2. Arduino setup
 
 - Install board: **esp32 by Espressif** 3.x via Board Manager
-- Install library: **ArduinoJson** 7.x via Library Manager
+- Install libraries: **ArduinoJson** 7.x, **PubSubClient** 2.8 via Library Manager
 - Board settings: `ESP32S3 Dev Module`, Flash `8MB`, PSRAM `OPI PSRAM`, Upload Speed `921600`
 
 Or use **arduino-cli**:
@@ -131,7 +143,11 @@ firmware/
     └── EPD*.cpp/h, spi.*      ← vendor display driver (do not modify)
 
 tools/
-└── get_token.py               ← one-time OAuth2 token helper
+├── get_token.py               ← one-time OAuth2 token helper
+├── push.py                    ← send push notification via MQTT
+└── mosquitto/
+    ├── docker-compose.yml     ← local MQTT broker (Mosquitto 2)
+    └── config/mosquitto.conf
 ```
 
 ---
@@ -140,6 +156,9 @@ tools/
 
 | Version | Feature |
 |---------|---------|
-| **v1.2** (current) | Overview redesign, attendees + description on cards, OOO left panel, meeting alerts |
+| v1.0 | Basic calendar display, clock, overview |
+| v1.2 | Overview redesign, attendees + description, OOO panel, meeting alerts |
+| v1.5 | MQTT push notifications, meeting density bar, done screen, WiFi backoff |
+| **v1.6** (current) | Double-booking / back-to-back split view |
 | v2 | Partial refresh for smoother button navigation |
 | v3 | AI agent on Mac serves meeting context over local HTTP; device polls and shows per-meeting summary |
