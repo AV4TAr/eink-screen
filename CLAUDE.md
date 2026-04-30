@@ -64,6 +64,7 @@ All firmware logic is in a single sketch `calendar_display.ino`. The display dri
 - `refreshData()` — calls all three fetch functions in sequence
 - `renderOverview()` — clock left panel + next meeting card (48px) + 2 upcoming events (16px)
 - `renderMeeting()` — full-screen black meeting-in-progress view with progress bar
+- `renderDoubleMeeting()` — 70/30 split view when two meetings overlap or a next meeting starts within 45 min of the active one; right panel is white (black text) if secondary hasn't started yet, black (white text) if active
 - `renderDetail()` — 2-event detail view with attendees and description
 - `checkAlerts()` — blink screen at T-5min and T-1min before meetings
 - `checkMeetingMode()` — switches between white/black background when entering/leaving a meeting
@@ -119,6 +120,7 @@ y=255: upd HH:MM              (12px)
 
 **Three views + notification mode:**
 - **Overview** — clock left, next meeting card + 2 upcoming events right + density bar
+- **Meeting** — full-screen black; switches to 70/30 split (`renderDoubleMeeting`) when a second meeting overlaps or starts within 45 min
 - **Detail** — 2 events at a time, large text, attendees, description; BTN_DOWN enters/scrolls, BTN_UP exits
 - **Done** — static screen when `eventCount == 0` and past noon; re-renders if new events appear
 - **Notification** (`inNotifMode`) — full-screen push notification; any button or 30s timeout dismisses
@@ -137,7 +139,7 @@ y=255: upd HH:MM              (12px)
 
 ## Roadmap
 
-- **v1.5 (current):** MQTT push notifications, meeting density bar, done screen, WiFi backoff
+- **v1.6 (current):** double-booking / back-to-back split view, MQTT push notifications, meeting density bar, done screen, WiFi backoff
 - **v2:** partial refresh for smoother button scrolling
 - **v3:** AI agent on Mac serves meeting context over local HTTP; ESP32 polls and displays summary per event
 - **Future:** Slack/Gmail daemon → MQTT pipeline, OOO improvements
