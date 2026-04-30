@@ -1492,7 +1492,7 @@ void renderDoubleMeeting() {
   struct tm* t = localtime(&now);
   int nowMins = t->tm_hour * 60 + t->tm_min;
 
-  // Find primary (currently active) and secondary (overlaps before primary ends)
+  // Find primary (currently active) and secondary (overlaps or starts within 45 min)
   CalEvent* primary   = nullptr;
   CalEvent* secondary = nullptr;
   for (int i = 0; i < eventCount; i++) {
@@ -1506,7 +1506,7 @@ void renderDoubleMeeting() {
     if (&events[i] == primary) continue;
     int s = events[i].startHour * 60 + events[i].startMin;
     int e = events[i].endHour   * 60 + events[i].endMin;
-    if (s < primaryEnd && e > nowMins) { secondary = &events[i]; break; }
+    if (s < primaryEnd + 45 && e > nowMins) { secondary = &events[i]; break; }
   }
   if (!secondary) { renderMeeting(); return; }
 
